@@ -1,0 +1,15 @@
+{
+  "task_id": "text-normalization-001",
+  "version": "1.0.0",
+  "split": "train",
+  "initial_files": [
+    {
+      "path": "input.txt",
+      "content": "  AGENTENV   Forge  \n\n CAUSAL    Evaluation \n"
+    }
+  ],
+  "input_artifact": "input.txt",
+  "expected_artifact": "result.txt",
+  "expected_content": "agentenv forge\ncausal evaluation\n",
+  "allowed_artifacts": ["result.txt"]
+}

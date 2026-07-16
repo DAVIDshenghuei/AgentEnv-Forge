@@ -1,0 +1,14 @@
+.venv/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+outputs/
+.coverage
+.env
+.env.*
+credentials*
+**/credentials*
+secrets*
+**/secrets*
+*.pem
+*.key
