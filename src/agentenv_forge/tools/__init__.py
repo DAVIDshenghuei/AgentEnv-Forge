@@ -1,5 +1,5 @@
 """Public workspace tools."""
 
-from .workspace import WorkspaceProtocol, WorkspaceTools
+from .workspace import WorkspaceActionLimitError, WorkspaceProtocol, WorkspaceTools
 
-__all__ = ["WorkspaceProtocol", "WorkspaceTools"]
+__all__ = ["WorkspaceActionLimitError", "WorkspaceProtocol", "WorkspaceTools"]

@@ -6,6 +6,10 @@ from ..runner import _read_bounded_text, _workspace_target, _write_workspace_tex
 from ..schemas import PublicTask
 
 
+class WorkspaceActionLimitError(ValueError):
+    """The public workspace action budget has been exhausted."""
+
+
 @runtime_checkable
 class WorkspaceProtocol(Protocol):
     def list_files(self) -> tuple[str, ...]: ...
@@ -37,7 +41,7 @@ class WorkspaceTools:
         if self._revoked:
             raise ValueError("workspace tools revoked")
         if self._used_actions >= self._task.max_actions:
-            raise ValueError("workspace action budget exhausted")
+            raise WorkspaceActionLimitError("workspace action budget exhausted")
         self._used_actions += 1
 
     def _check_declared_target(self, relative: str) -> None:
