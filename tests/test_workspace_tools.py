@@ -1,9 +1,11 @@
 import inspect
 import os
 import subprocess
+from threading import Event, Thread
 
 import pytest
 
+import agentenv_forge.tools.workspace as workspace_module
 from agentenv_forge.runner import MAX_FILE_BYTES, ResourceLimitError
 from agentenv_forge.schemas import PublicTask, TaskSpec
 from agentenv_forge.tools import WorkspaceProtocol, WorkspaceTools
@@ -645,3 +647,59 @@ def test_write_text_rejects_windows_junction_parent_without_mutating_input(tmp_p
         assert original_content.decode("utf-8") not in message
     finally:
         os.rmdir(junction)
+
+
+def test_revoke_waits_for_in_flight_write_to_finish(tmp_path, monkeypatch):
+    public_task = _filesystem_entry_task()
+    tools = WorkspaceTools(workspace=tmp_path, task=public_task)
+    write_entered = Event()
+    release_write = Event()
+    revoke_entered = Event()
+    revoke_done = Event()
+    thread_errors = []
+    original_write = workspace_module._write_workspace_text
+
+    def blocking_write(workspace, relative, content):
+        if relative == "result.txt":
+            write_entered.set()
+            if not release_write.wait(5):
+                raise TimeoutError("test write release timed out")
+        original_write(workspace, relative, content)
+
+    monkeypatch.setattr(workspace_module, "_write_workspace_text", blocking_write)
+
+    def write_target():
+        try:
+            tools.write_text("result.txt", "complete output\n")
+        except BaseException as error:
+            thread_errors.append(error)
+
+    def revoke_target():
+        revoke_entered.set()
+        try:
+            tools.revoke()
+        except BaseException as error:
+            thread_errors.append(error)
+        finally:
+            revoke_done.set()
+
+    writer = Thread(target=write_target, daemon=True)
+    revoker = Thread(target=revoke_target, daemon=True)
+    writer.start()
+    assert write_entered.wait(2)
+    revoker.start()
+    try:
+        assert revoke_entered.wait(2)
+        assert revoke_done.wait(0.1) is False
+    finally:
+        release_write.set()
+        writer.join(2)
+        revoker.join(2)
+
+    assert not writer.is_alive()
+    assert not revoker.is_alive()
+    assert thread_errors == []
+    assert revoke_done.is_set()
+    assert (tmp_path / "result.txt").read_text(encoding="utf-8") == "complete output\n"
+    with pytest.raises(ValueError, match="^workspace tools revoked$"):
+        tools.list_files()

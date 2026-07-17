@@ -4,6 +4,8 @@ import tempfile
 from datetime import datetime, timezone
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
+from threading import Condition
+from typing import TYPE_CHECKING
 
 from .schemas import (
     ArtifactRecord,
@@ -14,6 +16,9 @@ from .schemas import (
     Trajectory,
     validate_task_id,
 )
+
+if TYPE_CHECKING:
+    from .adapters import AgentAdapter
 
 
 MAX_WORKSPACE_ENTRIES = 128
@@ -211,6 +216,7 @@ def _build_trajectory(
     artifacts: list[ArtifactRecord],
     termination_reason: str,
     environment_failure: str | None,
+    agent_failure: str | None = None,
 ) -> Trajectory:
     return Trajectory(
         task_id=task.task_id,
@@ -223,7 +229,7 @@ def _build_trajectory(
         reward=reward,
         termination_reason=termination_reason,
         environment_failure=environment_failure,
-        agent_failure=None,
+        agent_failure=agent_failure,
         runtime_metadata={"completed_at": datetime.now(timezone.utc).isoformat()},
     )
 
@@ -246,6 +252,251 @@ def _resource_failure(
         termination_reason="resource_limit",
         environment_failure=str(error),
     )
+
+
+def run_agent_episode(
+    task_id: str,
+    adapter: "AgentAdapter",
+    seed: int,
+    workspace_root: Path | None = None,
+) -> Trajectory:
+    from .adapters import AgentRunResult
+    from .tools.workspace import (
+        WorkspaceTools,
+        _create_workspace_facade,
+        _revoke_workspace_facade,
+    )
+
+    task = load_task(task_id)
+    root = Path(workspace_root) if workspace_root is not None else None
+    if root is not None:
+        root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="agentenv-forge-", dir=root) as directory:
+        workspace = Path(directory)
+        for initial_file in task.initial_files:
+            _write_workspace_text(workspace, initial_file.path, initial_file.content)
+
+        events = [Event(sequence=0, kind="reset", detail="initial state restored")]
+
+        def emit(kind: str, detail: str) -> None:
+            events.append(Event(sequence=len(events), kind=kind, detail=detail))
+
+        public_task = task.to_public_task()
+        allowed_adapter_event_details = {
+            "list_files",
+            *(f"read_text:{path}" for path in public_task.input_artifacts),
+            *(f"write_text:{path}" for path in public_task.allowed_artifacts),
+        }
+        adapter_events_active = True
+        pending_adapter_call: str | None = None
+        in_flight_tool_call: str | None = None
+        completed_tool_call: str | None = None
+        adapter_tool_event_count = 0
+        facade_calls_in_flight = 0
+        adapter_event_condition = Condition()
+
+        def emit_adapter_event(kind: str, detail: str) -> None:
+            nonlocal pending_adapter_call
+            nonlocal in_flight_tool_call
+            nonlocal completed_tool_call
+            nonlocal adapter_tool_event_count
+            with adapter_event_condition:
+                if not adapter_events_active:
+                    raise ValueError("adapter events are inactive")
+                if (
+                    type(kind) is not str
+                    or type(detail) is not str
+                    or kind not in {"tool_call", "tool_result"}
+                    or detail not in allowed_adapter_event_details
+                ):
+                    raise ValueError("invalid adapter event")
+                if kind == "tool_call":
+                    if (
+                        pending_adapter_call is not None
+                        or in_flight_tool_call is not None
+                        or completed_tool_call is not None
+                    ):
+                        raise ValueError("invalid adapter event")
+                    pending_adapter_call = detail
+                    return
+                if (
+                    pending_adapter_call is not None
+                    or in_flight_tool_call is not None
+                    or completed_tool_call != detail
+                ):
+                    raise ValueError("invalid adapter event")
+                emit(kind, detail)
+                adapter_tool_event_count += 1
+                completed_tool_call = None
+
+        def before_tool_call(detail: str) -> None:
+            nonlocal pending_adapter_call
+            nonlocal in_flight_tool_call
+            nonlocal adapter_tool_event_count
+            nonlocal facade_calls_in_flight
+            with adapter_event_condition:
+                if (
+                    not adapter_events_active
+                    or in_flight_tool_call is not None
+                    or completed_tool_call is not None
+                    or pending_adapter_call != detail
+                    or adapter_tool_event_count >= 2 * public_task.max_actions + 1
+                ):
+                    raise ValueError("invalid adapter event")
+                emit("tool_call", detail)
+                adapter_tool_event_count += 1
+                pending_adapter_call = None
+                in_flight_tool_call = detail
+                facade_calls_in_flight += 1
+
+        def after_tool_call(detail: str, succeeded: bool) -> None:
+            nonlocal in_flight_tool_call
+            nonlocal completed_tool_call
+            nonlocal facade_calls_in_flight
+            with adapter_event_condition:
+                if in_flight_tool_call != detail:
+                    raise ValueError("invalid adapter event")
+                in_flight_tool_call = None
+                try:
+                    if not adapter_events_active or not succeeded:
+                        completed_tool_call = None
+                    else:
+                        if completed_tool_call is not None:
+                            raise ValueError("invalid adapter event")
+                        completed_tool_call = detail
+                finally:
+                    facade_calls_in_flight -= 1
+                    if facade_calls_in_flight == 0:
+                        adapter_event_condition.notify_all()
+
+        workspace_tools = WorkspaceTools(workspace=workspace, task=public_task)
+        adapter_tools = _create_workspace_facade(
+            workspace_tools, before_tool_call, after_tool_call
+        )
+
+        def deactivate_revoke_and_drain(
+            snapshot_handshake: bool = False,
+        ) -> tuple[str | None, str | None, str | None] | None:
+            nonlocal adapter_events_active
+            with adapter_event_condition:
+                adapter_events_active = False
+                snapshot = (
+                    pending_adapter_call,
+                    in_flight_tool_call,
+                    completed_tool_call,
+                )
+            _revoke_workspace_facade(adapter_tools)
+            with adapter_event_condition:
+                while facade_calls_in_flight > 0:
+                    adapter_event_condition.wait()
+            return snapshot if snapshot_handshake else None
+
+        emit("adapter_start", "adapter started")
+        try:
+            result = adapter.run(public_task, adapter_tools, emit_adapter_event)
+        except Exception:
+            deactivate_revoke_and_drain()
+            termination_reason = "agent_error"
+            agent_failure = "adapter execution failed"
+            emit("adapter_failure", agent_failure)
+        except BaseException:
+            deactivate_revoke_and_drain()
+            try:
+                adapter.close()
+            except Exception:
+                pass
+            raise
+        else:
+            handshake_snapshot = deactivate_revoke_and_drain(True)
+            valid_result = False
+            if type(result) is AgentRunResult and type(result.termination_reason) is str:
+                if result.termination_reason == "agent_error":
+                    if type(result.agent_failure) is str:
+                        try:
+                            failure_size = len(result.agent_failure.encode("utf-8"))
+                        except UnicodeError:
+                            pass
+                        else:
+                            valid_result = 1 <= failure_size <= 256
+                elif result.termination_reason in {"finished", "action_limit", "timeout"}:
+                    valid_result = result.agent_failure is None
+            valid_result = (
+                valid_result
+                and handshake_snapshot == (None, None, None)
+            )
+            if not valid_result:
+                termination_reason = "agent_error"
+                agent_failure = "adapter returned invalid result"
+                emit("adapter_failure", agent_failure)
+            elif result.termination_reason == "agent_error":
+                termination_reason = "agent_error"
+                agent_failure = "adapter reported failure"
+                emit("adapter_failure", agent_failure)
+            else:
+                termination_reason = result.termination_reason
+                agent_failure = result.agent_failure
+                if termination_reason in {"action_limit", "timeout"}:
+                    emit("adapter_termination", termination_reason)
+        try:
+            adapter.close()
+        except Exception:
+            termination_reason = "agent_error"
+            agent_failure = "adapter close failed"
+            emit("adapter_failure", agent_failure)
+            emit("adapter_stop", "adapter stop failed")
+        else:
+            emit("adapter_stop", "adapter stopped")
+        emit("tools_revoked", "workspace tools revoked")
+        try:
+            reward, artifacts = _verify(task, workspace)
+        except ResourceLimitError:
+            emit("verify_failed", "resource_limit")
+            return _build_trajectory(
+                task=task,
+                action="agent",
+                seed=seed,
+                events=events,
+                reward=RewardBreakdown(
+                    artifact_exists=0.0,
+                    exact_content=0.0,
+                    policy_compliance=0.0,
+                    total=0.0,
+                ),
+                artifacts=[],
+                termination_reason="resource_limit",
+                environment_failure="verification resource limit exceeded",
+                agent_failure=agent_failure,
+            )
+        except Exception:
+            emit("verify_failed", "environment_error")
+            return _build_trajectory(
+                task=task,
+                action="agent",
+                seed=seed,
+                events=events,
+                reward=RewardBreakdown(
+                    artifact_exists=0.0,
+                    exact_content=0.0,
+                    policy_compliance=0.0,
+                    total=0.0,
+                ),
+                artifacts=[],
+                termination_reason="environment_error",
+                environment_failure="verification failed",
+                agent_failure=agent_failure,
+            )
+        emit("verify", "deterministic verifier completed")
+        return _build_trajectory(
+            task=task,
+            action="agent",
+            seed=seed,
+            events=events,
+            reward=reward,
+            artifacts=artifacts,
+            termination_reason=termination_reason,
+            environment_failure=None,
+            agent_failure=agent_failure,
+        )
 
 
 def run_episode(task_id: str, action: str, seed: int, workspace_root: Path | None = None) -> Trajectory:

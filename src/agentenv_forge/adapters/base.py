@@ -15,6 +15,12 @@ class AgentRunResult:
 
 @runtime_checkable
 class AgentAdapter(Protocol):
+    """Trusted host integration around an untrusted model-facing capability.
+
+    Implementations receive only the narrow workspace protocol. Malicious
+    same-process Python plugins require process isolation outside M1.
+    """
+
     def run(
         self,
         task: PublicTask,
