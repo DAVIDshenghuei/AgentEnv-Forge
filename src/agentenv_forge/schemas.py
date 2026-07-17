@@ -40,6 +40,12 @@ def validate_task_id(value: str) -> str:
     return value
 
 
+def validate_instruction(value: str) -> str:
+    if not value.strip():
+        raise ValueError("instruction must contain non-whitespace content")
+    return value
+
+
 def validate_relative_artifact_path(value: str) -> str:
     """Accept only cross-platform-safe normalized relative file paths."""
     if not value or "\\" in value:
@@ -69,6 +75,47 @@ def validate_relative_artifact_path(value: str) -> str:
     return value
 
 
+def validate_declared_file_count(
+    input_paths: tuple[str, ...], allowed_paths: tuple[str, ...]
+) -> None:
+    if len(input_paths) + len(allowed_paths) > MAX_DECLARED_FILES:
+        raise ValueError("final workspace file count exceeds limit")
+
+
+def validate_unique_paths(paths: tuple[str, ...], *, label: str) -> None:
+    if len(paths) != len(set(paths)):
+        raise ValueError(f"{label} paths must be unique")
+
+
+def validate_artifact_collections_do_not_overlap(
+    input_paths: tuple[str, ...], allowed_paths: tuple[str, ...]
+) -> None:
+    if set(allowed_paths).intersection(input_paths):
+        raise ValueError("allowed output artifacts cannot overlap initial state")
+
+
+def validate_declared_path_collisions(declared_paths: tuple[str, ...]) -> None:
+    parent_directories = {
+        PurePosixPath(*PurePosixPath(path).parts[:depth]).as_posix()
+        for path in declared_paths
+        for depth in range(1, len(PurePosixPath(path).parts))
+    }
+    if len(declared_paths) + len(parent_directories) > MAX_DECLARED_ENTRIES:
+        raise ValueError("final workspace entry count exceeds limit")
+    canonical_paths = tuple(
+        "/".join(part.casefold() for part in PurePosixPath(path).parts)
+        for path in declared_paths
+    )
+    if len(canonical_paths) != len(set(canonical_paths)):
+        raise ValueError("declared paths have a Windows-equivalent collision")
+    path_parts = [(path, PurePosixPath(path).parts) for path in canonical_paths]
+    for left_path, left_parts in path_parts:
+        for right_path, right_parts in path_parts:
+            if left_path != right_path and len(left_parts) < len(right_parts):
+                if right_parts[: len(left_parts)] == left_parts:
+                    raise ValueError("declared file path cannot be an ancestor of another path")
+
+
 class InitialFile(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -86,17 +133,67 @@ class InitialFile(BaseModel):
         return validate_utf8_size(value)
 
 
+class PublicTask(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    task_id: str
+    version: str
+    instruction: str
+    input_artifacts: tuple[str, ...] = Field(
+        min_length=1, max_length=MAX_DECLARED_FILES
+    )
+    allowed_artifacts: tuple[str, ...] = Field(
+        min_length=1, max_length=MAX_DECLARED_FILES
+    )
+    max_actions: int = Field(ge=1, le=32)
+
+    @field_validator("instruction")
+    @classmethod
+    def instruction_has_usable_content(cls, value: str) -> str:
+        return validate_instruction(value)
+
+    @field_validator("task_id")
+    @classmethod
+    def task_id_is_safe(cls, value: str) -> str:
+        return validate_task_id(value)
+
+    @field_validator("input_artifacts", "allowed_artifacts")
+    @classmethod
+    def artifact_paths_are_safe(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(validate_relative_artifact_path(value) for value in values)
+
+    @model_validator(mode="after")
+    def artifact_collections_form_a_safe_contract(self) -> "PublicTask":
+        validate_declared_file_count(self.input_artifacts, self.allowed_artifacts)
+        validate_unique_paths(self.input_artifacts, label="input artifact")
+        validate_unique_paths(self.allowed_artifacts, label="allowed artifact")
+        validate_artifact_collections_do_not_overlap(
+            self.input_artifacts, self.allowed_artifacts
+        )
+        validate_declared_path_collisions(
+            self.input_artifacts + self.allowed_artifacts
+        )
+        return self
+
+
 class TaskSpec(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     task_id: str
     version: str
+    instruction: str
+    max_actions: int = Field(ge=1, le=32)
     split: Literal["train", "validation", "holdout"]
     initial_files: tuple[InitialFile, ...]
     input_artifact: str
     expected_artifact: str
     expected_content: str = Field(max_length=1_048_576)
     allowed_artifacts: tuple[str, ...]
+
+    @field_validator("instruction")
+    @classmethod
+    def instruction_has_usable_content(cls, value: str) -> str:
+        return validate_instruction(value)
 
     @field_validator("task_id")
     @classmethod
@@ -121,43 +218,33 @@ class TaskSpec(BaseModel):
     @model_validator(mode="after")
     def paths_form_a_valid_causal_contract(self) -> "TaskSpec":
         initial_paths = tuple(item.path for item in self.initial_files)
-        if len(initial_paths) + len(self.allowed_artifacts) > MAX_DECLARED_FILES:
-            raise ValueError("final workspace file count exceeds limit")
+        validate_declared_file_count(initial_paths, self.allowed_artifacts)
         initial_bytes = sum(len(item.content.encode("utf-8")) for item in self.initial_files)
         expected_bytes = len(self.expected_content.encode("utf-8"))
         if initial_bytes + expected_bytes > MAX_DECLARED_TOTAL_BYTES:
             raise ValueError("final workspace byte count exceeds limit")
-        if len(initial_paths) != len(set(initial_paths)):
-            raise ValueError("initial file paths must be unique")
+        validate_unique_paths(initial_paths, label="initial file")
         if self.input_artifact not in initial_paths:
             raise ValueError("input_artifact must identify an initial file")
-        if len(self.allowed_artifacts) != len(set(self.allowed_artifacts)):
-            raise ValueError("allowed artifact paths must be unique")
+        validate_unique_paths(self.allowed_artifacts, label="allowed artifact")
         if self.expected_artifact not in self.allowed_artifacts:
             raise ValueError("expected_artifact must be listed in allowed_artifacts")
-        if set(self.allowed_artifacts).intersection(initial_paths):
-            raise ValueError("allowed output artifacts cannot overlap initial state")
-        declared_paths = initial_paths + self.allowed_artifacts
-        parent_directories = {
-            PurePosixPath(*PurePosixPath(path).parts[:depth]).as_posix()
-            for path in declared_paths
-            for depth in range(1, len(PurePosixPath(path).parts))
-        }
-        if len(declared_paths) + len(parent_directories) > MAX_DECLARED_ENTRIES:
-            raise ValueError("final workspace entry count exceeds limit")
-        canonical_paths = tuple(
-            "/".join(part.casefold() for part in PurePosixPath(path).parts)
-            for path in declared_paths
+        validate_artifact_collections_do_not_overlap(
+            initial_paths, self.allowed_artifacts
         )
-        if len(canonical_paths) != len(set(canonical_paths)):
-            raise ValueError("declared paths have a Windows-equivalent collision")
-        path_parts = [(path, PurePosixPath(path).parts) for path in canonical_paths]
-        for left_path, left_parts in path_parts:
-            for right_path, right_parts in path_parts:
-                if left_path != right_path and len(left_parts) < len(right_parts):
-                    if right_parts[: len(left_parts)] == left_parts:
-                        raise ValueError("declared file path cannot be an ancestor of another path")
+        declared_paths = initial_paths + self.allowed_artifacts
+        validate_declared_path_collisions(declared_paths)
         return self
+
+    def to_public_task(self) -> PublicTask:
+        return PublicTask(
+            task_id=self.task_id,
+            version=self.version,
+            instruction=self.instruction,
+            input_artifacts=tuple(item.path for item in self.initial_files),
+            allowed_artifacts=self.allowed_artifacts,
+            max_actions=self.max_actions,
+        )
 
 
 class ConditionLabels(BaseModel):

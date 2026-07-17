@@ -1,6 +1,8 @@
 {
   "task_id": "text-normalization-001",
   "version": "1.0.0",
+  "instruction": "Normalize the input text and write the result to result.txt.",
+  "max_actions": 8,
   "split": "train",
   "initial_files": [
     {

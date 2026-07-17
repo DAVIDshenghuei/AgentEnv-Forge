@@ -4,13 +4,15 @@ import pytest
 from pydantic import ValidationError
 
 from agentenv_forge.runner import load_task, parse_task
-from agentenv_forge.schemas import TaskSpec
+from agentenv_forge.schemas import PublicTask, TaskSpec
 
 
 def _task_data() -> dict:
-    return {
+    data = {
         "task_id": "test-task",
         "version": "1",
+        "instruction": "Normalize the input text.",
+        "max_actions": 4,
         "split": "train",
         "initial_files": [{"path": "input.txt", "content": "input"}],
         "input_artifact": "input.txt",
@@ -18,6 +20,188 @@ def _task_data() -> dict:
         "expected_content": "result",
         "allowed_artifacts": ["result.txt"],
     }
+    return data
+
+
+def test_task_requires_non_empty_instruction():
+    data = _task_data()
+
+    assert TaskSpec.model_validate(data).instruction == data["instruction"]
+
+    del data["instruction"]
+    with pytest.raises(ValidationError, match="instruction"):
+        TaskSpec.model_validate(data)
+
+    for instruction in ("", " \t\n"):
+        data["instruction"] = instruction
+        with pytest.raises(ValidationError, match="instruction"):
+            TaskSpec.model_validate(data)
+
+
+def test_task_constrains_max_actions_to_public_limit():
+    for max_actions in (1, 32):
+        data = _task_data()
+        data["max_actions"] = max_actions
+        assert TaskSpec.model_validate(data).max_actions == max_actions
+
+    for max_actions in (0, 33):
+        data = _task_data()
+        data["max_actions"] = max_actions
+        with pytest.raises(ValidationError, match="max_actions"):
+            TaskSpec.model_validate(data)
+
+
+def test_to_public_task_is_deeply_frozen_and_forbids_extra_fields():
+    data = _task_data()
+    data["initial_files"] = [
+        {"path": "input.txt", "content": "PRIMARY SECRET CONTENT"},
+        {"path": "context.txt", "content": "SECONDARY SECRET CONTENT"},
+    ]
+    task = TaskSpec.model_validate(data)
+
+    public_task = task.to_public_task()
+
+    assert set(type(public_task).model_fields) == {
+        "task_id",
+        "version",
+        "instruction",
+        "input_artifacts",
+        "allowed_artifacts",
+        "max_actions",
+    }
+    assert public_task.input_artifacts == tuple(
+        initial_file.path for initial_file in task.initial_files
+    )
+
+    with pytest.raises((TypeError, ValidationError)):
+        public_task.instruction = "Changed"
+    with pytest.raises(TypeError):
+        public_task.input_artifacts[0] = "changed.txt"
+    with pytest.raises(ValidationError, match="extra"):
+        type(public_task).model_validate(
+            {**public_task.model_dump(mode="json"), "expected_content": "secret"}
+        )
+
+
+def test_serialized_public_task_excludes_hidden_verifier_data():
+    data = _task_data()
+    data["initial_files"] = [
+        {"path": "input.txt", "content": "PRIMARY SECRET CONTENT"},
+        {"path": "context.txt", "content": "SECONDARY SECRET CONTENT"},
+    ]
+    task = TaskSpec.model_validate(data)
+
+    serialized = json.loads(task.to_public_task().model_dump_json())
+
+    assert set(serialized) == {
+        "task_id",
+        "version",
+        "instruction",
+        "input_artifacts",
+        "allowed_artifacts",
+        "max_actions",
+    }
+    assert serialized["input_artifacts"] == ["input.txt", "context.txt"]
+    assert "expected_content" not in serialized
+    assert "expected_artifact" not in serialized
+    serialized_json = json.dumps(serialized)
+    assert "PRIMARY SECRET CONTENT" not in serialized_json
+    assert "SECONDARY SECRET CONTENT" not in serialized_json
+
+
+def _public_task_data() -> dict:
+    return {
+        "task_id": "test-task",
+        "version": "1",
+        "instruction": "Normalize the input text.",
+        "input_artifacts": ("input.txt",),
+        "allowed_artifacts": ("result.txt",),
+        "max_actions": 8,
+    }
+
+
+@pytest.mark.parametrize("max_actions", (1, 32))
+def test_public_task_direct_validation_accepts_max_action_boundaries(max_actions):
+    public_task = PublicTask.model_validate(
+        {**_public_task_data(), "max_actions": max_actions}
+    )
+
+    assert public_task.max_actions == max_actions
+
+
+@pytest.mark.parametrize(
+    "override",
+    (
+        {"instruction": " \t\n"},
+        {"max_actions": 0},
+        {"max_actions": 33},
+    ),
+)
+def test_public_task_direct_validation_rejects_invalid_content_limits(override):
+    with pytest.raises(ValidationError):
+        PublicTask.model_validate({**_public_task_data(), **override})
+
+
+def test_public_task_direct_validation_accepts_valid_minimal_security_contract():
+    public_task = PublicTask.model_validate(_public_task_data())
+
+    assert public_task.model_dump() == _public_task_data()
+
+
+@pytest.mark.parametrize(
+    "override",
+    (
+        pytest.param({"task_id": "../escape"}, id="unsafe-task-id"),
+        pytest.param(
+            {"input_artifacts": ("../secret",)}, id="unsafe-input-path"
+        ),
+        pytest.param(
+            {"allowed_artifacts": ("C:/escape.txt",)}, id="unsafe-allowed-path"
+        ),
+        pytest.param({"input_artifacts": ()}, id="empty-input-artifacts"),
+        pytest.param({"allowed_artifacts": ()}, id="empty-allowed-artifacts"),
+        pytest.param(
+            {"input_artifacts": ("input.txt", "input.txt")},
+            id="duplicate-input-artifacts",
+        ),
+        pytest.param(
+            {"allowed_artifacts": ("result.txt", "result.txt")},
+            id="duplicate-allowed-artifacts",
+        ),
+        pytest.param(
+            {
+                "input_artifacts": ("shared.txt",),
+                "allowed_artifacts": ("shared.txt",),
+            },
+            id="input-allowed-overlap",
+        ),
+        pytest.param(
+            {
+                "input_artifacts": ("Artifact.txt",),
+                "allowed_artifacts": ("artifact.txt",),
+            },
+            id="windows-equivalent-cross-collection-collision",
+        ),
+        pytest.param(
+            {
+                "input_artifacts": ("a",),
+                "allowed_artifacts": ("a/b",),
+            },
+            id="ancestor-cross-collection-collision",
+        ),
+        pytest.param(
+            {"input_artifacts": ("a", "a/b")},
+            id="ancestor-input-collection-collision",
+        ),
+        pytest.param(
+            {"allowed_artifacts": ("a", "a/b")},
+            id="ancestor-allowed-collection-collision",
+        ),
+    ),
+)
+def test_public_task_direct_validation_rejects_unsafe_contract(override):
+    with pytest.raises(ValidationError):
+        PublicTask.model_validate({**_public_task_data(), **override})
 
 
 def test_task_initial_files_are_deeply_immutable():

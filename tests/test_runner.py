@@ -60,6 +60,8 @@ def test_action_resource_limit_becomes_fail_closed_trajectory(tmp_path, monkeypa
         {
             "task_id": "expanding-input",
             "version": "1",
+            "instruction": "Normalize the source text.",
+            "max_actions": 8,
             "split": "train",
             "initial_files": [{"path": "source.txt", "content": expanding_input}],
             "input_artifact": "source.txt",
@@ -93,6 +95,8 @@ def test_invalid_deep_path_is_rejected_before_reset_materialization(tmp_path, mo
     invalid_data = {
         "task_id": "deep-path",
         "version": "1",
+        "instruction": "Process the input artifact.",
+        "max_actions": 8,
         "split": "train",
         "initial_files": [
             {"path": "a/b/c/d/e/f/g/h/i.txt", "content": "input"}
@@ -122,6 +126,8 @@ def test_maximum_valid_file_count_executes_correct_action(tmp_path, monkeypatch)
         {
             "task_id": "max-files",
             "version": "1",
+            "instruction": "Normalize the first input file.",
+            "max_actions": 8,
             "split": "train",
             "initial_files": initial_files,
             "input_artifact": "input-0.txt",

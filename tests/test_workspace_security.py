@@ -19,6 +19,8 @@ def _task(expected_artifact: str = "result.txt") -> TaskSpec:
         {
             "task_id": "test-task",
             "version": "1",
+            "instruction": "Process the declared input artifact.",
+            "max_actions": 8,
             "split": "train",
             "initial_files": [{"path": "input.txt", "content": "input"}],
             "input_artifact": "input.txt",
@@ -44,6 +46,8 @@ def test_action_reads_schema_declared_input_artifact(tmp_path):
         {
             "task_id": "custom-input",
             "version": "1",
+            "instruction": "Normalize the declared source text.",
+            "max_actions": 8,
             "split": "train",
             "initial_files": [{"path": "source.txt", "content": "  CUSTOM   INPUT  "}],
             "input_artifact": "source.txt",
@@ -65,6 +69,8 @@ def test_workspace_text_io_preserves_exact_utf8_newline_bytes(tmp_path):
         {
             "task_id": "newline-bytes",
             "version": "1",
+            "instruction": "Preserve the declared text exactly.",
+            "max_actions": 8,
             "split": "train",
             "initial_files": [{"path": "input.txt", "content": content}],
             "input_artifact": "input.txt",
