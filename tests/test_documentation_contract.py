@@ -10,6 +10,8 @@ _EXPECTED_CI_WORKFLOW = """name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
 
 permissions:
