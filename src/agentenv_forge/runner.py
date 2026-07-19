@@ -20,7 +20,7 @@ from .schemas import (
 
 if TYPE_CHECKING:
     from .adapters import AgentAdapter
-    from .tools import TerminalResult
+    from .tools import ResearchClientProtocol, TerminalResult
 
 
 class TerminalEnvironment(Protocol):
@@ -286,11 +286,17 @@ def run_agent_episode(
     workspace_root: Path | None = None,
     terminal_command_runner: "Callable[[tuple[str, ...]], TerminalResult] | None" = None,
     terminal_environment_factory: "Callable[[Path], TerminalEnvironment] | None" = None,
+    research_client: "ResearchClientProtocol | None" = None,
 ) -> Trajectory:
     if terminal_command_runner is not None and terminal_environment_factory is not None:
         raise ValueError("terminal runner and environment are mutually exclusive")
     from .adapters import AgentRunResult
-    from .tools import ActionBudget, TerminalResult, TerminalTools
+    from .tools import (
+        ActionBudget,
+        ResearchTools,
+        TerminalResult,
+        TerminalTools,
+    )
     from .tools.workspace import (
         WorkspaceTools,
         _create_workspace_facade,
@@ -312,6 +318,27 @@ def run_agent_episode(
             events.append(Event(sequence=len(events), kind=kind, detail=detail))
 
         public_task = task.to_public_task()
+        budget = ActionBudget(public_task.max_actions)
+        workspace_tools = WorkspaceTools(
+            workspace=workspace,
+            task=public_task,
+            budget=budget,
+        )
+        if research_client is None:
+
+            class _UnavailableResearchClient:
+                def search_papers(self, query: str, limit: int):
+                    raise ValueError("research client unavailable")
+
+                def get_paper(self, paper_id: str):
+                    raise ValueError("research client unavailable")
+
+            research_client = _UnavailableResearchClient()
+        research_tools = ResearchTools(
+            task=public_task,
+            budget=budget,
+            client=research_client,
+        )
         terminal_environment: TerminalEnvironment | None = None
         if terminal_environment_factory is not None:
             try:
@@ -349,10 +376,11 @@ def run_agent_episode(
                 except BaseException:
                     pass
                 raise
-            emit("environment_start", "terminal environment started")
         allowed_adapter_event_details = {
             "list_files",
             "terminal_execute",
+            "research_search_papers",
+            "research_get_paper",
             *(f"read_text:{path}" for path in public_task.input_artifacts),
             *(f"write_text:{path}" for path in public_task.allowed_artifacts),
         }
@@ -438,35 +466,66 @@ def run_agent_episode(
                     if facade_calls_in_flight == 0:
                         adapter_event_condition.notify_all()
 
-        budget = ActionBudget(public_task.max_actions)
-        workspace_tools = WorkspaceTools(
-            workspace=workspace,
-            task=public_task,
-            budget=budget,
-        )
+        try:
+            if terminal_environment is not None:
+                command_runner = terminal_environment.execute
+            elif terminal_command_runner is None:
+
+                def unavailable_terminal_runner(
+                    argv: tuple[str, ...],
+                ) -> TerminalResult:
+                    raise ValueError("terminal is unavailable")
+
+                command_runner = unavailable_terminal_runner
+            else:
+                command_runner = terminal_command_runner
+            terminal_tools = TerminalTools(
+                task=public_task,
+                budget=budget,
+                command_runner=command_runner,
+            )
+            adapter_tools = _create_workspace_facade(
+                workspace_tools,
+                before_tool_call,
+                after_tool_call,
+                terminal_tools,
+                research_tools,
+            )
+        except Exception:
+            if terminal_environment is None:
+                raise
+            _close_terminal_environment(terminal_environment)
+            try:
+                adapter.close()
+            except BaseException:
+                pass
+            emit("environment_failure", "terminal environment startup failed")
+            return _build_trajectory(
+                task=task,
+                action="agent",
+                seed=seed,
+                events=events,
+                reward=RewardBreakdown(
+                    artifact_exists=0.0,
+                    exact_content=0.0,
+                    policy_compliance=0.0,
+                    total=0.0,
+                ),
+                artifacts=[],
+                termination_reason="environment_error",
+                environment_failure="terminal environment startup failed",
+                agent_failure=None,
+            )
+        except BaseException:
+            if terminal_environment is not None:
+                _close_terminal_environment(terminal_environment)
+                try:
+                    adapter.close()
+                except BaseException:
+                    pass
+            raise
         if terminal_environment is not None:
-            command_runner = terminal_environment.execute
-        elif terminal_command_runner is None:
-
-            def unavailable_terminal_runner(
-                argv: tuple[str, ...],
-            ) -> TerminalResult:
-                raise ValueError("terminal is unavailable")
-
-            command_runner = unavailable_terminal_runner
-        else:
-            command_runner = terminal_command_runner
-        terminal_tools = TerminalTools(
-            task=public_task,
-            budget=budget,
-            command_runner=command_runner,
-        )
-        adapter_tools = _create_workspace_facade(
-            workspace_tools,
-            before_tool_call,
-            after_tool_call,
-            terminal_tools,
-        )
+            emit("environment_start", "terminal environment started")
 
         def deactivate_revoke_and_drain(
             snapshot_handshake: bool = False,
@@ -661,6 +720,7 @@ def run_docker_agent_episode(
     workspace_root: Path | None = None,
     image: str = "agentenv-forge-sandbox:test",
     command_timeout_seconds: float = 10.0,
+    research_client: "ResearchClientProtocol | None" = None,
 ) -> Trajectory:
     from uuid import uuid4
 
@@ -685,6 +745,7 @@ def run_docker_agent_episode(
         seed=seed,
         workspace_root=workspace_root,
         terminal_environment_factory=create_environment,
+        research_client=research_client,
     )
 
 

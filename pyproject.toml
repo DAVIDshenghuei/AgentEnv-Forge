@@ -3,7 +3,10 @@ name = "agentenv-forge"
 version = "0.1.0"
 description = "Deterministic causal environment evaluation vertical slice"
 requires-python = ">=3.11,<3.12"
-dependencies = ["pydantic>=2.7,<3"]
+dependencies = [
+    "mcp>=1.28.1,<2",
+    "pydantic>=2.7,<3",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=9.0.3,<10"]

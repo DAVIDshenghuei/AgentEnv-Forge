@@ -31,6 +31,9 @@ jobs:
       - name: Install frozen development environment
         run: uv sync --extra dev --frozen
 
+      - name: Run Research MCP stdio contract
+        run: uv run --no-sync pytest tests/test_research_mcp_stdio.py -q
+
       - name: Build dedicated sandbox image
         run: docker build --no-cache -f sandbox/Dockerfile -t agentenv-forge-sandbox:test .
 

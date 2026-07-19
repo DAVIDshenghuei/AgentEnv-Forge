@@ -1,0 +1,17 @@
+{
+  "task_id": "research-synthesis-001",
+  "version": "1.0.0",
+  "instruction": "Use the research tools to find the Offline Tool Evaluation paper and write a concise two-line citation to result.txt.",
+  "max_actions": 5,
+  "split": "train",
+  "initial_files": [
+    {
+      "path": "notes.txt",
+      "content": "Find the Offline Tool Evaluation paper in the offline research corpus.\n"
+    }
+  ],
+  "input_artifact": "notes.txt",
+  "expected_artifact": "result.txt",
+  "expected_content": "Offline Tool Evaluation (2023)\nAn AGENT ENVIRONMENT corpus for offline research.\n",
+  "allowed_artifacts": ["result.txt"]
+}

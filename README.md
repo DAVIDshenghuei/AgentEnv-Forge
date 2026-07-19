@@ -1,6 +1,6 @@
 # AgentEnv Forge
 
-This repository contains a deliberately small, deterministic causal evaluation slice. It has no model or API dependency: a checked-in task is reset into a fresh temporary workspace, a controlled action writes `result.txt`, and a deterministic verifier emits reward plus a JSONL trajectory.
+This repository contains a deliberately small, deterministic causal evaluation slice. It has no model or remote API dependency: a checked-in task is reset into a fresh temporary workspace, a controlled action writes `result.txt`, and a deterministic verifier emits reward plus a JSONL trajectory.
 
 ## Setup
 
@@ -46,4 +46,14 @@ Agent episodes can run commands in a dedicated, non-root Docker sandbox with no 
 
 Workspace and terminal capabilities consume one shared action budget, so either kind of admitted call counts against the task's single `max_actions` limit. At the end of an agent run, the runner revokes and drains both capabilities, closes the adapter, and closes the terminal environment. This environment cleanup completes before hidden verification. Agent failures and environment failures remain separate trajectory fields; cleanup or verification failures are environment failures and cannot be mistaken for agent failures.
 
-Browser, MCP, CAMEL, model inference, and RL training are not implemented. The implemented adapter seam is local and deterministic; these integrations remain outside the current milestone.
+## Offline Research MCP
+
+Status: **implemented**
+
+Research uses a fixed, versioned corpus bundled with the project and the official MCP stdio transport. Corpus version `1.0.0` is bound to every ordered record field by a canonical SHA-256 manifest. The server exposes exactly `search_papers` and `get_paper`; records and summary projections use strict immutable validation. It performs no network access or model inference.
+
+The synchronous production client starts only the bundled Python module and does not accept an arbitrary MCP command. It opens one stdio process and session per call and validates the exact server identity and tool inventory, including schemas and metadata, then applies a default 10-second operation deadline. The official transport closes stdin and uses a two-second graceful shutdown window before terminating and, if necessary, killing the process tree. Each is closed before return and before hidden verification. Research, workspace, and terminal capabilities consume one shared episode action budget. Trajectories record generic, payload-free trajectory events, so queries, paper identifiers, titles, abstracts, and bodies are not copied into event details.
+
+The train task `research-synthesis-001` is the M3A acceptance path: it searches the offline corpus, reads one paper, formats the permitted fields through the terminal capability, writes `result.txt`, and is scored by the existing hidden verifier.
+
+Browser, CAMEL, model inference, and RL training are not implemented. The implemented adapter seam is local and deterministic; these integrations remain outside the current milestone.

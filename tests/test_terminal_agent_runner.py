@@ -115,3 +115,42 @@ def test_agent_runner_shares_one_budget_across_terminal_and_workspace(tmp_path) 
     assert trajectory.events[-3].detail == "adapter stopped"
     assert trajectory.events[-2].detail == "workspace tools revoked"
     assert trajectory.events[-1].detail == "deterministic verifier completed"
+
+
+def test_terminal_capability_setup_failure_closes_started_environment(tmp_path) -> None:
+    lifecycle: list[str] = []
+
+    class MissingExecuteEnvironment:
+        def start(self) -> None:
+            lifecycle.append("start")
+
+        def close(self) -> None:
+            lifecycle.append("environment_close")
+
+    class NoRunAdapter:
+        def run(self, task, tools, event_sink):
+            raise AssertionError("adapter must not run")
+
+        def close(self) -> None:
+            lifecycle.append("adapter_close")
+
+    def factory(workspace):
+        lifecycle.append("factory")
+        return MissingExecuteEnvironment()
+
+    trajectory = run_agent_episode(
+        task_id="text-normalization-001",
+        adapter=NoRunAdapter(),
+        seed=42,
+        workspace_root=tmp_path,
+        terminal_environment_factory=factory,
+    )
+
+    assert lifecycle == ["factory", "start", "environment_close", "adapter_close"]
+    assert trajectory.termination_reason == "environment_error"
+    assert trajectory.environment_failure == "terminal environment startup failed"
+    assert trajectory.reward.total == 0.0
+    assert [(event.kind, event.detail) for event in trajectory.events] == [
+        ("reset", "initial state restored"),
+        ("environment_failure", "terminal environment startup failed"),
+    ]

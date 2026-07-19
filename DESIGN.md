@@ -49,4 +49,12 @@ The terminal lifecycle is ordered: run the adapter, deactivate event admission, 
 
 Failure precedence preserves the primary failure instead of collapsing unrelated causes. Agent execution, result, or adapter-close failures populate `agent_failure`; environment startup, cleanup, resource-limit verification, and verifier failures populate `environment_failure`. A later successful cleanup does not erase an agent failure, while a cleanup failure prevents hidden verification and becomes the environment outcome.
 
-Browser, MCP, CAMEL, model inference, and RL training are not implemented. Any later integrations must remain adapters behind the task-safe capability boundary and must preserve lifecycle ordering, hidden-oracle isolation, and deterministic verification.
+## Implemented offline Research MCP lifecycle
+
+The offline server owns a fixed, versioned corpus with strict immutable validation for full records and summary projections. Corpus version `1.0.0` is bound to every ordered record field by a canonical SHA-256 manifest. It uses the official MCP stdio transport and exposes exactly `search_papers` and `get_paper`; it has no network, clock, randomness, remote API, browser, or model-inference dependency.
+
+The synchronous production wrapper starts only the bundled Python module and does not accept an arbitrary MCP command. It creates one stdio process and session per call, validates the exact server identity and tool inventory, including schemas and metadata, and applies a default 10-second operation deadline. The official transport closes stdin and uses a two-second graceful shutdown window before terminating and, if necessary, killing the process tree. Each is closed before return and before hidden verification. Malformed identity, inventory, results, timeouts, or tool failures collapse to a sanitized local failure without copying remote payloads into the trajectory.
+
+Research tools share the shared episode action budget with workspace and terminal tools. The opaque adapter facade emits generic, payload-free trajectory events for research calls, then revokes and drains the research capability alongside the other capabilities before adapter close and verification. The M3A train task `research-synthesis-001` exercises this complete lifecycle against deterministic hidden verification.
+
+Browser, CAMEL, model inference, and RL training are not implemented. Any later integrations must remain adapters behind the task-safe capability boundary and must preserve lifecycle ordering, hidden-oracle isolation, and deterministic verification.

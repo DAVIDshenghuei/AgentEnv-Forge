@@ -7,6 +7,7 @@ from weakref import WeakKeyDictionary
 from ..runner import _read_bounded_text, _workspace_target, _write_workspace_text
 from ..schemas import PublicTask
 from .budget import ActionBudget, ActionBudgetExhaustedError
+from .research import ResearchProtocol, ResearchTools
 from .terminal import TerminalProtocol, TerminalResult, TerminalTools
 
 
@@ -24,8 +25,10 @@ class WorkspaceProtocol(Protocol):
 
 
 @runtime_checkable
-class AgentToolsProtocol(WorkspaceProtocol, TerminalProtocol, Protocol):
-    """Opaque model-facing filesystem and terminal capability bundle."""
+class AgentToolsProtocol(
+    WorkspaceProtocol, TerminalProtocol, ResearchProtocol, Protocol
+):
+    """Opaque model-facing workspace, terminal, and research capabilities."""
 
 
 class WorkspaceTools:
@@ -223,9 +226,43 @@ class _AdapterWorkspaceFacade:
         state.after_call(detail, True)
         return result
 
+    def search_papers(self, query: str, limit: int):
+        if type(query) is not str or type(limit) is not int:
+            raise ValueError("invalid research tool call")
+        state = _facade_state(self)
+        detail = "research_search_papers"
+        state.before_call(detail)
+        try:
+            result = state.research_tools.search_papers(query, limit)
+        except BaseException:
+            state.after_call(detail, False)
+            raise
+        state.after_call(detail, True)
+        return result
+
+    def get_paper(self, paper_id: str):
+        if type(paper_id) is not str:
+            raise ValueError("invalid research tool call")
+        state = _facade_state(self)
+        detail = "research_get_paper"
+        state.before_call(detail)
+        try:
+            result = state.research_tools.get_paper(paper_id)
+        except BaseException:
+            state.after_call(detail, False)
+            raise
+        state.after_call(detail, True)
+        return result
+
 
 class _FacadeState:
-    __slots__ = ("tools", "terminal_tools", "before_call", "after_call")
+    __slots__ = (
+        "tools",
+        "terminal_tools",
+        "research_tools",
+        "before_call",
+        "after_call",
+    )
 
     def __init__(
         self,
@@ -233,9 +270,11 @@ class _FacadeState:
         before_call: Callable[[str], None],
         after_call: Callable[[str, bool], None],
         terminal_tools: TerminalTools | None,
+        research_tools: ResearchTools,
     ) -> None:
         self.tools = tools
         self.terminal_tools = terminal_tools
+        self.research_tools = research_tools
         self.before_call = before_call
         self.after_call = after_call
 
@@ -259,11 +298,14 @@ def _create_workspace_facade(
     before_call: Callable[[str], None],
     after_call: Callable[[str, bool], None],
     terminal_tools: TerminalTools | None = None,
+    research_tools: ResearchTools | None = None,
 ) -> AgentToolsProtocol:
+    if research_tools is None:
+        raise ValueError("research tools unavailable")
     facade = _AdapterWorkspaceFacade()
     with _FACADE_TOOLS_LOCK:
         _FACADE_TOOLS[facade] = _FacadeState(
-            tools, before_call, after_call, terminal_tools
+            tools, before_call, after_call, terminal_tools, research_tools
         )
     return facade
 
@@ -276,3 +318,4 @@ def _revoke_workspace_facade(facade: WorkspaceProtocol) -> None:
         state.tools.revoke()
         if state.terminal_tools is not None:
             state.terminal_tools.revoke()
+        state.research_tools.revoke()
