@@ -5,7 +5,8 @@ ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
 DESIGN = ROOT / "DESIGN.md"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
-_UNIMPLEMENTED = "Browser, MCP, CAMEL, model inference, and RL training are not implemented"
+GIT_ATTRIBUTES = ROOT / ".gitattributes"
+_UNIMPLEMENTED = "Browser, CAMEL, model inference, and RL training are not implemented"
 _EXPECTED_CI_WORKFLOW = """name: CI
 
 on:
@@ -38,6 +39,9 @@ jobs:
 
       - name: Install frozen development environment
         run: uv sync --extra dev --frozen
+
+      - name: Run Research MCP stdio contract
+        run: uv run --no-sync pytest tests/test_research_mcp_stdio.py -q
 
       - name: Build dedicated sandbox image
         run: docker build --no-cache -f sandbox/Dockerfile -t agentenv-forge-sandbox:test .
@@ -74,6 +78,45 @@ def test_design_documents_the_implemented_terminal_lifecycle() -> None:
     assert "primary failure" in design
 
 
+def test_readme_documents_the_implemented_offline_research_mcp() -> None:
+    readme = README.read_text(encoding="utf-8")
+
+    assert "## Offline Research MCP" in readme
+    assert "Status: **implemented**" in readme
+    assert "fixed, versioned corpus" in readme
+    assert "canonical SHA-256 manifest" in readme
+    assert "does not accept an arbitrary MCP command" in readme
+    assert "10-second operation deadline" in readme
+    assert "two-second graceful shutdown window" in readme
+    assert "exact server identity and tool inventory" in readme
+    assert "official MCP stdio transport" in readme
+    assert "`search_papers` and `get_paper`" in readme
+    assert "shared episode action budget" in readme
+    assert "generic, payload-free trajectory events" in readme
+    assert "one stdio process and session per call" in readme
+    assert "closed before return and before hidden verification" in readme
+    assert "`research-synthesis-001`" in readme
+
+
+def test_design_documents_the_implemented_offline_research_lifecycle() -> None:
+    design = DESIGN.read_text(encoding="utf-8")
+
+    assert "## Implemented offline Research MCP lifecycle" in design
+    assert "fixed, versioned corpus" in design
+    assert "canonical SHA-256 manifest" in design
+    assert "does not accept an arbitrary MCP command" in design
+    assert "10-second operation deadline" in design
+    assert "two-second graceful shutdown window" in design
+    assert "exact server identity and tool inventory" in design
+    assert "official MCP stdio transport" in design
+    assert "`search_papers` and `get_paper`" in design
+    assert "shared episode action budget" in design
+    assert "generic, payload-free trajectory events" in design
+    assert "one stdio process and session per call" in design
+    assert "closed before return and before hidden verification" in design
+    assert "`research-synthesis-001`" in design
+
+
 def test_docs_fail_closed_about_unimplemented_next_milestone() -> None:
     for document in (README, DESIGN):
         contents = document.read_text(encoding="utf-8")
@@ -92,3 +135,9 @@ def test_design_distinguishes_command_sync_from_environment_close() -> None:
 
 def test_ci_matches_the_reviewed_fail_closed_workflow() -> None:
     assert CI_WORKFLOW.read_bytes() == _EXPECTED_CI_WORKFLOW.encode("utf-8")
+
+
+def test_github_workflows_are_checked_out_with_lf_bytes() -> None:
+    assert "/.github/workflows/*.yml text eol=lf" in GIT_ATTRIBUTES.read_text(
+        encoding="utf-8"
+    ).splitlines()
