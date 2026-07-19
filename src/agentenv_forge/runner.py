@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
 from threading import Condition
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from .schemas import (
     ArtifactRecord,
@@ -19,6 +19,7 @@ from .schemas import (
 
 if TYPE_CHECKING:
     from .adapters import AgentAdapter
+    from .tools import TerminalResult
 
 
 MAX_WORKSPACE_ENTRIES = 128
@@ -259,8 +260,10 @@ def run_agent_episode(
     adapter: "AgentAdapter",
     seed: int,
     workspace_root: Path | None = None,
+    terminal_command_runner: "Callable[[tuple[str, ...]], TerminalResult] | None" = None,
 ) -> Trajectory:
     from .adapters import AgentRunResult
+    from .tools import ActionBudget, TerminalResult, TerminalTools
     from .tools.workspace import (
         WorkspaceTools,
         _create_workspace_facade,
@@ -284,6 +287,7 @@ def run_agent_episode(
         public_task = task.to_public_task()
         allowed_adapter_event_details = {
             "list_files",
+            "terminal_execute",
             *(f"read_text:{path}" for path in public_task.input_artifacts),
             *(f"write_text:{path}" for path in public_task.allowed_artifacts),
         }
@@ -369,9 +373,32 @@ def run_agent_episode(
                     if facade_calls_in_flight == 0:
                         adapter_event_condition.notify_all()
 
-        workspace_tools = WorkspaceTools(workspace=workspace, task=public_task)
+        budget = ActionBudget(public_task.max_actions)
+        workspace_tools = WorkspaceTools(
+            workspace=workspace,
+            task=public_task,
+            budget=budget,
+        )
+        if terminal_command_runner is None:
+
+            def unavailable_terminal_runner(
+                argv: tuple[str, ...],
+            ) -> TerminalResult:
+                raise ValueError("terminal is unavailable")
+
+            command_runner = unavailable_terminal_runner
+        else:
+            command_runner = terminal_command_runner
+        terminal_tools = TerminalTools(
+            task=public_task,
+            budget=budget,
+            command_runner=command_runner,
+        )
         adapter_tools = _create_workspace_facade(
-            workspace_tools, before_tool_call, after_tool_call
+            workspace_tools,
+            before_tool_call,
+            after_tool_call,
+            terminal_tools,
         )
 
         def deactivate_revoke_and_drain(

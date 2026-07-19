@@ -7,11 +7,17 @@ from .terminal import (
     TerminalResult,
     TerminalTools,
 )
-from .workspace import WorkspaceActionLimitError, WorkspaceProtocol, WorkspaceTools
+from .workspace import (
+    AgentToolsProtocol,
+    WorkspaceActionLimitError,
+    WorkspaceProtocol,
+    WorkspaceTools,
+)
 
 __all__ = [
     "ActionBudget",
     "ActionBudgetExhaustedError",
+    "AgentToolsProtocol",
     "TerminalActionLimitError",
     "TerminalProtocol",
     "TerminalResult",

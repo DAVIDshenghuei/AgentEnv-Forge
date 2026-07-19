@@ -1,7 +1,7 @@
 from typing import Callable
 
 from ..schemas import PublicTask
-from ..tools import WorkspaceActionLimitError, WorkspaceProtocol
+from ..tools import AgentToolsProtocol, WorkspaceActionLimitError
 from .base import AgentRunResult
 
 
@@ -25,7 +25,7 @@ class ScriptedAdapter:
     def run(
         self,
         task: PublicTask,
-        tools: WorkspaceProtocol,
+        tools: AgentToolsProtocol,
         event_sink: Callable[[str, str], None],
     ) -> AgentRunResult:
         if self._closed:

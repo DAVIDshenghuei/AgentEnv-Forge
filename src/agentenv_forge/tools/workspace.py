@@ -7,6 +7,7 @@ from weakref import WeakKeyDictionary
 from ..runner import _read_bounded_text, _workspace_target, _write_workspace_text
 from ..schemas import PublicTask
 from .budget import ActionBudget, ActionBudgetExhaustedError
+from .terminal import TerminalProtocol, TerminalResult, TerminalTools
 
 
 class WorkspaceActionLimitError(ValueError):
@@ -20,6 +21,11 @@ class WorkspaceProtocol(Protocol):
     def read_text(self, relative: str) -> str: ...
 
     def write_text(self, relative: str, content: str) -> None: ...
+
+
+@runtime_checkable
+class AgentToolsProtocol(WorkspaceProtocol, TerminalProtocol, Protocol):
+    """Opaque model-facing filesystem and terminal capability bundle."""
 
 
 class WorkspaceTools:
@@ -203,17 +209,33 @@ class _AdapterWorkspaceFacade:
             raise
         state.after_call(detail, True)
 
+    def execute(self, argv: tuple[str, ...]) -> TerminalResult:
+        state = _facade_state(self)
+        if state.terminal_tools is None:
+            raise ValueError("terminal tools unavailable")
+        detail = "terminal_execute"
+        state.before_call(detail)
+        try:
+            result = state.terminal_tools.execute(argv)
+        except BaseException:
+            state.after_call(detail, False)
+            raise
+        state.after_call(detail, True)
+        return result
+
 
 class _FacadeState:
-    __slots__ = ("tools", "before_call", "after_call")
+    __slots__ = ("tools", "terminal_tools", "before_call", "after_call")
 
     def __init__(
         self,
         tools: WorkspaceTools,
         before_call: Callable[[str], None],
         after_call: Callable[[str, bool], None],
+        terminal_tools: TerminalTools | None,
     ) -> None:
         self.tools = tools
+        self.terminal_tools = terminal_tools
         self.before_call = before_call
         self.after_call = after_call
 
@@ -236,10 +258,13 @@ def _create_workspace_facade(
     tools: WorkspaceTools,
     before_call: Callable[[str], None],
     after_call: Callable[[str, bool], None],
-) -> WorkspaceProtocol:
+    terminal_tools: TerminalTools | None = None,
+) -> AgentToolsProtocol:
     facade = _AdapterWorkspaceFacade()
     with _FACADE_TOOLS_LOCK:
-        _FACADE_TOOLS[facade] = _FacadeState(tools, before_call, after_call)
+        _FACADE_TOOLS[facade] = _FacadeState(
+            tools, before_call, after_call, terminal_tools
+        )
     return facade
 
 
@@ -249,3 +274,5 @@ def _revoke_workspace_facade(facade: WorkspaceProtocol) -> None:
         _FACADE_TOOLS[facade] = None
     if state is not None:
         state.tools.revoke()
+        if state.terminal_tools is not None:
+            state.terminal_tools.revoke()

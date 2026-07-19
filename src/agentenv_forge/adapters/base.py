@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Callable, Literal, Protocol, runtime_checkable
 
 from ..schemas import PublicTask
-from ..tools import WorkspaceProtocol
+from ..tools import AgentToolsProtocol
 
 
 @dataclass(frozen=True)
@@ -24,7 +24,7 @@ class AgentAdapter(Protocol):
     def run(
         self,
         task: PublicTask,
-        tools: WorkspaceProtocol,
+        tools: AgentToolsProtocol,
         event_sink: Callable[[str, str], None],
     ) -> AgentRunResult: ...
 
