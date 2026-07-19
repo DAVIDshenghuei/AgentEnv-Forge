@@ -99,6 +99,15 @@ class BoundedProcessExecutor:
         except (OSError, subprocess.TimeoutExpired):
             pass
 
+    @classmethod
+    def _settle_or_kill_and_wait(cls, process: subprocess.Popen[bytes]) -> None:
+        try:
+            process.wait(timeout=_KILL_WAIT_SECONDS)
+        except subprocess.TimeoutExpired:
+            cls._kill_and_wait(process)
+        except OSError:
+            cls._kill_and_wait(process)
+
     def __call__(
         self, argv: tuple[str, ...], timeout_seconds: float
     ) -> DockerCommandResult:
@@ -136,28 +145,43 @@ class BoundedProcessExecutor:
         deadline = monotonic() + float(timeout_seconds)
         failure: ProcessExecutionError | None = None
         exit_code: int | None = None
-        while exit_code is None:
-            if stdout_capture.overflow.is_set() or stderr_capture.overflow.is_set():
-                failure = ProcessOutputLimitError("process output limit exceeded")
-                self._kill_and_wait(process)
-                break
-            if stdout_capture.failure.is_set() or stderr_capture.failure.is_set():
-                failure = ProcessExecutionError("process execution failed")
-                self._kill_and_wait(process)
-                break
-            remaining = deadline - monotonic()
-            if remaining <= 0:
-                failure = ProcessTimeoutError("process timed out")
-                self._kill_and_wait(process)
-                break
+        try:
+            while exit_code is None:
+                if stdout_capture.overflow.is_set() or stderr_capture.overflow.is_set():
+                    failure = ProcessOutputLimitError("process output limit exceeded")
+                    self._kill_and_wait(process)
+                    break
+                if stdout_capture.failure.is_set() or stderr_capture.failure.is_set():
+                    failure = ProcessExecutionError("process execution failed")
+                    self._kill_and_wait(process)
+                    break
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    failure = ProcessTimeoutError("process timed out")
+                    self._kill_and_wait(process)
+                    break
+                try:
+                    exit_code = process.wait(timeout=min(_POLL_SECONDS, remaining))
+                except subprocess.TimeoutExpired:
+                    continue
+                except OSError:
+                    failure = ProcessExecutionError("process execution failed")
+                    self._kill_and_wait(process)
+                    break
+        except BaseException:
             try:
-                exit_code = process.wait(timeout=min(_POLL_SECONDS, remaining))
-            except subprocess.TimeoutExpired:
-                continue
-            except OSError:
-                failure = ProcessExecutionError("process execution failed")
-                self._kill_and_wait(process)
-                break
+                self._settle_or_kill_and_wait(process)
+            except BaseException:
+                try:
+                    self._kill_and_wait(process)
+                except BaseException:
+                    pass
+            for thread in (stdout_thread, stderr_thread):
+                try:
+                    thread.join(timeout=_KILL_WAIT_SECONDS)
+                except BaseException:
+                    pass
+            raise
 
         stdout_thread.join(timeout=_KILL_WAIT_SECONDS)
         stderr_thread.join(timeout=_KILL_WAIT_SECONDS)

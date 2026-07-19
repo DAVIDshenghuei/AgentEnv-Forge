@@ -1,8 +1,11 @@
 import os
 import sys
 import time
+from io import BytesIO
 
 import pytest
+
+import agentenv_forge.sandbox.process as process_module
 
 from agentenv_forge.sandbox import (
     BoundedProcessExecutor,
@@ -77,6 +80,40 @@ def test_bounded_executor_terminates_on_timeout() -> None:
         executor((sys.executable, "-c", "import time; time.sleep(10)"), 0.1)
 
     assert time.monotonic() - started < 3.0
+
+
+def test_bounded_executor_kills_and_reaps_before_propagating_base_exception(
+    monkeypatch,
+) -> None:
+    class InterruptedProcess:
+        def __init__(self) -> None:
+            self.stdout = BytesIO()
+            self.stderr = BytesIO()
+            self.killed = False
+            self.wait_calls = 0
+
+        def wait(self, timeout):
+            self.wait_calls += 1
+            if self.wait_calls == 1:
+                raise KeyboardInterrupt("cancel")
+            if not self.killed:
+                raise process_module.subprocess.TimeoutExpired("docker", timeout)
+            return -9
+
+        def kill(self) -> None:
+            self.killed = True
+
+    process = InterruptedProcess()
+    monkeypatch.setattr(process_module.subprocess, "Popen", lambda *args, **kwargs: process)
+    executor = BoundedProcessExecutor(max_output_bytes=4_096)
+
+    with pytest.raises(KeyboardInterrupt, match="^cancel$"):
+        executor(("docker", "run"), 5.0)
+
+    assert process.killed is True
+    assert process.wait_calls == 3
+    assert process.stdout.closed is True
+    assert process.stderr.closed is True
 
 
 @pytest.mark.parametrize(

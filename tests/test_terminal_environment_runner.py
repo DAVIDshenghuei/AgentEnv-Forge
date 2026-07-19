@@ -108,6 +108,43 @@ class FailingEnvironment:
             raise RuntimeError(self.marker)
 
 
+class TransientCloseEnvironment(FailingEnvironment):
+    def __init__(self, lifecycle: list[str]) -> None:
+        super().__init__(lifecycle, "none", "unused")
+        self.close_attempts = 0
+
+    def close(self) -> None:
+        self.lifecycle.append("environment_close")
+        self.close_attempts += 1
+        if self.close_attempts == 1:
+            raise RuntimeError("transient cleanup failure")
+
+
+def test_agent_runner_retries_transient_environment_cleanup_before_verification(
+    tmp_path,
+) -> None:
+    lifecycle: list[str] = []
+
+    trajectory = run_agent_episode(
+        task_id="text-normalization-001",
+        adapter=LifecycleAdapter(lifecycle),
+        seed=42,
+        workspace_root=tmp_path,
+        terminal_environment_factory=lambda workspace: TransientCloseEnvironment(
+            lifecycle
+        ),
+    )
+
+    assert lifecycle[-3:] == [
+        "adapter_close",
+        "environment_close",
+        "environment_close",
+    ]
+    assert trajectory.termination_reason == "finished"
+    assert trajectory.environment_failure is None
+    assert trajectory.reward.total == 1.0
+
+
 def test_agent_runner_sanitizes_environment_start_failure_and_closes_adapter(
     tmp_path,
 ) -> None:
@@ -152,6 +189,7 @@ def test_agent_runner_blocks_verification_when_environment_cleanup_fails(
         "environment_start",
         "adapter_run",
         "adapter_close",
+        "environment_close",
         "environment_close",
     ]
     assert trajectory.termination_reason == "environment_error"
@@ -215,3 +253,115 @@ def test_adapter_close_base_exception_still_closes_environment(tmp_path) -> None
         "environment_close",
     ]
     assert not list(tmp_path.iterdir())
+
+
+class MaskingStartEnvironment(FailingEnvironment):
+    def start(self) -> None:
+        self.lifecycle.append("environment_start")
+        raise KeyboardInterrupt("original start cancellation")
+
+    def close(self) -> None:
+        self.lifecycle.append("environment_close")
+        raise SystemExit("secondary environment cleanup")
+
+
+class CleanupFailingEnvironment(FailingEnvironment):
+    def close(self) -> None:
+        self.lifecycle.append("environment_close")
+        raise SystemExit("secondary environment cleanup")
+
+
+class TransientBaseCloseEnvironment(FailingEnvironment):
+    def __init__(self, lifecycle: list[str]) -> None:
+        super().__init__(lifecycle, "none", "unused")
+        self.close_attempts = 0
+
+    def close(self) -> None:
+        self.lifecycle.append("environment_close")
+        self.close_attempts += 1
+        if self.close_attempts == 1:
+            raise SystemExit("transient cleanup cancellation")
+
+
+class PrimaryRunCancellationAdapter(LifecycleAdapter):
+    def run(self, task, tools, event_sink):
+        self.lifecycle.append("adapter_run")
+        raise KeyboardInterrupt("primary adapter cancellation")
+
+
+class MaskingRunAdapter(LifecycleAdapter):
+    def run(self, task, tools, event_sink):
+        self.lifecycle.append("adapter_run")
+        raise KeyboardInterrupt("original adapter cancellation")
+
+    def close(self) -> None:
+        self.lifecycle.append("adapter_close")
+        raise SystemExit("secondary adapter cleanup")
+
+
+def test_start_cleanup_base_exception_does_not_mask_original(tmp_path) -> None:
+    lifecycle: list[str] = []
+
+    with pytest.raises(KeyboardInterrupt, match="^original start cancellation$"):
+        run_agent_episode(
+            task_id="text-normalization-001",
+            adapter=LifecycleAdapter(lifecycle),
+            seed=42,
+            workspace_root=tmp_path,
+            terminal_environment_factory=lambda workspace: MaskingStartEnvironment(
+                lifecycle, "none", "unused"
+            ),
+        )
+
+    assert lifecycle == [
+        "environment_start",
+        "environment_close",
+        "environment_close",
+        "adapter_close",
+    ]
+
+
+def test_adapter_cancellation_retries_environment_base_cleanup(tmp_path) -> None:
+    lifecycle: list[str] = []
+
+    with pytest.raises(KeyboardInterrupt, match="^primary adapter cancellation$"):
+        run_agent_episode(
+            task_id="text-normalization-001",
+            adapter=PrimaryRunCancellationAdapter(lifecycle),
+            seed=42,
+            workspace_root=tmp_path,
+            terminal_environment_factory=lambda workspace: TransientBaseCloseEnvironment(
+                lifecycle
+            ),
+        )
+
+    assert lifecycle == [
+        "environment_start",
+        "adapter_run",
+        "adapter_close",
+        "environment_close",
+        "environment_close",
+    ]
+
+
+def test_adapter_cleanup_base_exceptions_do_not_mask_original(tmp_path) -> None:
+    lifecycle: list[str] = []
+
+    with pytest.raises(KeyboardInterrupt, match="^original adapter cancellation$"):
+        run_agent_episode(
+            task_id="text-normalization-001",
+            adapter=MaskingRunAdapter(lifecycle),
+            seed=42,
+            workspace_root=tmp_path,
+            terminal_environment_factory=lambda workspace: CleanupFailingEnvironment(
+                lifecycle, "none", "unused"
+            ),
+        )
+
+    assert lifecycle == [
+        "environment_start",
+        "adapter_run",
+        "adapter_close",
+        "environment_close",
+        "environment_close",
+    ]
