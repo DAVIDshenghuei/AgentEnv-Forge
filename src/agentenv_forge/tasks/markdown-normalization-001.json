@@ -1,0 +1,17 @@
+{
+  "task_id": "markdown-normalization-001",
+  "version": "1.0.0",
+  "instruction": "Normalize the Markdown text and write the result to normalized.md.",
+  "max_actions": 8,
+  "split": "train",
+  "initial_files": [
+    {
+      "path": "draft.md",
+      "content": "  #  TITLE  \n\n  Alpha   BETA  \n"
+    }
+  ],
+  "input_artifact": "draft.md",
+  "expected_artifact": "normalized.md",
+  "expected_content": "# title\nalpha beta\n",
+  "allowed_artifacts": ["normalized.md"]
+}

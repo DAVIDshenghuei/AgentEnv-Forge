@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
 from threading import Condition
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Protocol
 
 from .schemas import (
     ArtifactRecord,
@@ -20,6 +20,14 @@ from .schemas import (
 if TYPE_CHECKING:
     from .adapters import AgentAdapter
     from .tools import TerminalResult
+
+
+class TerminalEnvironment(Protocol):
+    def start(self) -> None: ...
+
+    def execute(self, argv: tuple[str, ...]) -> "TerminalResult": ...
+
+    def close(self) -> None: ...
 
 
 MAX_WORKSPACE_ENTRIES = 128
@@ -261,7 +269,10 @@ def run_agent_episode(
     seed: int,
     workspace_root: Path | None = None,
     terminal_command_runner: "Callable[[tuple[str, ...]], TerminalResult] | None" = None,
+    terminal_environment_factory: "Callable[[Path], TerminalEnvironment] | None" = None,
 ) -> Trajectory:
+    if terminal_command_runner is not None and terminal_environment_factory is not None:
+        raise ValueError("terminal runner and environment are mutually exclusive")
     from .adapters import AgentRunResult
     from .tools import ActionBudget, TerminalResult, TerminalTools
     from .tools.workspace import (
@@ -285,6 +296,50 @@ def run_agent_episode(
             events.append(Event(sequence=len(events), kind=kind, detail=detail))
 
         public_task = task.to_public_task()
+        terminal_environment: TerminalEnvironment | None = None
+        if terminal_environment_factory is not None:
+            try:
+                terminal_environment = terminal_environment_factory(workspace)
+                terminal_environment.start()
+            except Exception:
+                if terminal_environment is not None:
+                    try:
+                        terminal_environment.close()
+                    except Exception:
+                        pass
+                try:
+                    adapter.close()
+                except Exception:
+                    pass
+                emit("environment_failure", "terminal environment startup failed")
+                return _build_trajectory(
+                    task=task,
+                    action="agent",
+                    seed=seed,
+                    events=events,
+                    reward=RewardBreakdown(
+                        artifact_exists=0.0,
+                        exact_content=0.0,
+                        policy_compliance=0.0,
+                        total=0.0,
+                    ),
+                    artifacts=[],
+                    termination_reason="environment_error",
+                    environment_failure="terminal environment startup failed",
+                    agent_failure=None,
+                )
+            except BaseException:
+                if terminal_environment is not None:
+                    try:
+                        terminal_environment.close()
+                    except Exception:
+                        pass
+                try:
+                    adapter.close()
+                except Exception:
+                    pass
+                raise
+            emit("environment_start", "terminal environment started")
         allowed_adapter_event_details = {
             "list_files",
             "terminal_execute",
@@ -379,7 +434,9 @@ def run_agent_episode(
             task=public_task,
             budget=budget,
         )
-        if terminal_command_runner is None:
+        if terminal_environment is not None:
+            command_runner = terminal_environment.execute
+        elif terminal_command_runner is None:
 
             def unavailable_terminal_runner(
                 argv: tuple[str, ...],
@@ -432,6 +489,11 @@ def run_agent_episode(
                 adapter.close()
             except Exception:
                 pass
+            if terminal_environment is not None:
+                try:
+                    terminal_environment.close()
+                except Exception:
+                    pass
             raise
         else:
             handshake_snapshot = deactivate_revoke_and_drain(True)
@@ -471,9 +533,42 @@ def run_agent_episode(
             agent_failure = "adapter close failed"
             emit("adapter_failure", agent_failure)
             emit("adapter_stop", "adapter stop failed")
+        except BaseException:
+            if terminal_environment is not None:
+                try:
+                    terminal_environment.close()
+                except BaseException:
+                    pass
+            raise
         else:
             emit("adapter_stop", "adapter stopped")
+        environment_cleanup_failed = False
+        if terminal_environment is not None:
+            try:
+                terminal_environment.close()
+            except Exception:
+                environment_cleanup_failed = True
+                emit("environment_failure", "terminal environment cleanup failed")
+            else:
+                emit("environment_stop", "terminal environment stopped")
         emit("tools_revoked", "workspace tools revoked")
+        if environment_cleanup_failed:
+            return _build_trajectory(
+                task=task,
+                action="agent",
+                seed=seed,
+                events=events,
+                reward=RewardBreakdown(
+                    artifact_exists=0.0,
+                    exact_content=0.0,
+                    policy_compliance=0.0,
+                    total=0.0,
+                ),
+                artifacts=[],
+                termination_reason="environment_error",
+                environment_failure="terminal environment cleanup failed",
+                agent_failure=agent_failure,
+            )
         try:
             reward, artifacts = _verify(task, workspace)
         except ResourceLimitError:
@@ -524,6 +619,38 @@ def run_agent_episode(
             environment_failure=None,
             agent_failure=agent_failure,
         )
+
+
+def run_docker_agent_episode(
+    task_id: str,
+    adapter: "AgentAdapter",
+    seed: int,
+    workspace_root: Path | None = None,
+    image: str = "agentenv-forge-sandbox:test",
+    command_timeout_seconds: float = 10.0,
+) -> Trajectory:
+    from uuid import uuid4
+
+    from .sandbox import BoundedProcessExecutor, DockerSandbox
+
+    executor = BoundedProcessExecutor(max_output_bytes=65_536)
+
+    def create_environment(workspace: Path) -> DockerSandbox:
+        return DockerSandbox(
+            workspace=workspace,
+            image=image,
+            command_executor=executor,
+            container_name=f"agentenv-forge-episode-{uuid4().hex}",
+            command_timeout_seconds=command_timeout_seconds,
+        )
+
+    return run_agent_episode(
+        task_id=task_id,
+        adapter=adapter,
+        seed=seed,
+        workspace_root=workspace_root,
+        terminal_environment_factory=create_environment,
+    )
 
 
 def run_episode(task_id: str, action: str, seed: int, workspace_root: Path | None = None) -> Trajectory:
