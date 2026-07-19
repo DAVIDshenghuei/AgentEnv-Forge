@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.ref_type }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.8.11"
+
+      - name: Install frozen development environment
+        run: uv sync --extra dev --frozen
+
+      - name: Build dedicated sandbox image
+        run: docker build --no-cache -f sandbox/Dockerfile -t agentenv-forge-sandbox:test .
+
+      - name: Run full test suite with Docker integration
+        run: AGENTENV_FORGE_DOCKER_INTEGRATION=1 uv run --no-sync pytest -q
+
+      - name: Build Compose services
+        run: docker compose build
+
+      - name: Run Compose smoke test
+        run: docker compose run --rm smoke

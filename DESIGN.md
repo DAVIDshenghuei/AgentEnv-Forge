@@ -34,11 +34,19 @@ The intervention comparison holds task, version, baseline, and seed fixed while 
 - Rewards are bounded and their total must exactly match the declared deterministic weights.
 - Initial paths are excluded from produced artifacts only after their exact contents are revalidated; any mutation zeros `policy_compliance`. Produced artifacts are hashed incrementally with SHA-256.
 - Verification rejects symlinks and is bounded to 128 workspace entries, 64 files, 1 MiB per file, 4 MiB total file bytes, and path depth 8. Resource-limit failures produce a deterministic zero-reward trajectory with `termination_reason=resource_limit`.
-- The controlled action is synchronous. A future Agent adapter must terminate and revoke all workspace access before verification begins; concurrent Agent/verifier access is outside this slice's security contract.
+- Agent execution and deterministic controlled actions use the same verification boundary. Agent episodes revoke and drain capabilities before verification begins; concurrent agent/verifier access is outside this slice's security contract.
 - Environment and agent failure fields are separate. A successful episode sets both to null.
 - Unknown tasks/actions, invalid schemas, holdout tasks, and non-resource verifier/schema errors fail closed: no successful trajectory is returned or written.
 - Runtime output contains the split label but never the hidden expected content. Holdout task specifications are rejected before workspace creation, preventing holdout leakage.
 
-## Future adapter seam
+## Implemented terminal-agent lifecycle
 
-The boundary to extend is the controlled action step: a future action adapter can receive a task-safe workspace and return an action result while reset, event capture, verifier, reward schemas, and trajectory serialization remain unchanged. CAMEL may later orchestrate agents, SGLang may supply inference, and AReaL may consume trajectories for training. Those integrations must remain adapters behind this boundary and are intentionally not implemented here.
+The agent runner creates one episode-scoped action budget and shares it between the declared workspace tools and terminal tools. Terminal commands execute in a non-root Docker environment whose host workspace bind is read-only; a bounded writable tmpfs holds the container-side working copy. Each capability performs its own revocation while budget ownership remains episode-wide.
+
+Each completed terminal command synchronizes and validates the container working copy back to the host before `execute()` returns. Closing the Docker environment removes the container; it does not perform a final workspace synchronization.
+
+The terminal lifecycle is ordered: run the adapter, deactivate event admission, revoke and drain capabilities, close the adapter, close the Docker environment, and only then run hidden verification. If cleanup fails, verification does not run and the episode returns an environment error.
+
+Failure precedence preserves the primary failure instead of collapsing unrelated causes. Agent execution, result, or adapter-close failures populate `agent_failure`; environment startup, cleanup, resource-limit verification, and verifier failures populate `environment_failure`. A later successful cleanup does not erase an agent failure, while a cleanup failure prevents hidden verification and becomes the environment outcome.
+
+Browser, MCP, CAMEL, model inference, and RL training are not implemented. Any later integrations must remain adapters behind the task-safe capability boundary and must preserve lifecycle ordering, hidden-oracle isolation, and deterministic verification.
