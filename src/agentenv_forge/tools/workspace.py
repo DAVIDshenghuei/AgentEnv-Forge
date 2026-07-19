@@ -6,6 +6,7 @@ from weakref import WeakKeyDictionary
 
 from ..runner import _read_bounded_text, _workspace_target, _write_workspace_text
 from ..schemas import PublicTask
+from .budget import ActionBudget, ActionBudgetExhaustedError
 
 
 class WorkspaceActionLimitError(ValueError):
@@ -25,13 +26,26 @@ class WorkspaceTools:
     __slots__ = (
         "_workspace",
         "_task",
-        "_used_actions",
+        "_budget",
         "_revoked",
         "_condition",
         "_in_flight",
     )
 
-    def __init__(self, workspace: Path, task: PublicTask) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        task: PublicTask,
+        budget: ActionBudget | None = None,
+    ) -> None:
+        task_limit = task.max_actions
+        if type(task_limit) is not int:
+            raise ValueError("invalid workspace action budget")
+        if budget is not None:
+            if type(budget) is not ActionBudget or budget.limit != task_limit:
+                raise ValueError("invalid workspace action budget")
+        else:
+            budget = ActionBudget(task_limit)
         try:
             root = workspace.resolve(strict=True)
             if not root.is_dir():
@@ -40,7 +54,7 @@ class WorkspaceTools:
             raise ValueError("workspace is unavailable") from None
         self._workspace = root
         self._task = task
-        self._used_actions = 0
+        self._budget = budget
         self._revoked = False
         self._condition = Condition()
         self._in_flight = 0
@@ -55,9 +69,12 @@ class WorkspaceTools:
         with self._condition:
             if self._revoked:
                 raise ValueError("workspace tools revoked")
-            if self._used_actions >= self._task.max_actions:
-                raise WorkspaceActionLimitError("workspace action budget exhausted")
-            self._used_actions += 1
+            try:
+                self._budget.charge()
+            except ActionBudgetExhaustedError:
+                raise WorkspaceActionLimitError(
+                    "workspace action budget exhausted"
+                ) from None
             self._in_flight += 1
 
     def _end_action(self) -> None:
