@@ -6,6 +6,8 @@ from weakref import WeakKeyDictionary
 
 from ..runner import _read_bounded_text, _workspace_target, _write_workspace_text
 from ..schemas import PublicTask
+from .budget import ActionBudget, ActionBudgetExhaustedError
+from .terminal import TerminalProtocol, TerminalResult, TerminalTools
 
 
 class WorkspaceActionLimitError(ValueError):
@@ -21,17 +23,35 @@ class WorkspaceProtocol(Protocol):
     def write_text(self, relative: str, content: str) -> None: ...
 
 
+@runtime_checkable
+class AgentToolsProtocol(WorkspaceProtocol, TerminalProtocol, Protocol):
+    """Opaque model-facing filesystem and terminal capability bundle."""
+
+
 class WorkspaceTools:
     __slots__ = (
         "_workspace",
         "_task",
-        "_used_actions",
+        "_budget",
         "_revoked",
         "_condition",
         "_in_flight",
     )
 
-    def __init__(self, workspace: Path, task: PublicTask) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        task: PublicTask,
+        budget: ActionBudget | None = None,
+    ) -> None:
+        task_limit = task.max_actions
+        if type(task_limit) is not int:
+            raise ValueError("invalid workspace action budget")
+        if budget is not None:
+            if type(budget) is not ActionBudget or budget.limit != task_limit:
+                raise ValueError("invalid workspace action budget")
+        else:
+            budget = ActionBudget(task_limit)
         try:
             root = workspace.resolve(strict=True)
             if not root.is_dir():
@@ -40,7 +60,7 @@ class WorkspaceTools:
             raise ValueError("workspace is unavailable") from None
         self._workspace = root
         self._task = task
-        self._used_actions = 0
+        self._budget = budget
         self._revoked = False
         self._condition = Condition()
         self._in_flight = 0
@@ -55,9 +75,12 @@ class WorkspaceTools:
         with self._condition:
             if self._revoked:
                 raise ValueError("workspace tools revoked")
-            if self._used_actions >= self._task.max_actions:
-                raise WorkspaceActionLimitError("workspace action budget exhausted")
-            self._used_actions += 1
+            try:
+                self._budget.charge()
+            except ActionBudgetExhaustedError:
+                raise WorkspaceActionLimitError(
+                    "workspace action budget exhausted"
+                ) from None
             self._in_flight += 1
 
     def _end_action(self) -> None:
@@ -186,17 +209,33 @@ class _AdapterWorkspaceFacade:
             raise
         state.after_call(detail, True)
 
+    def execute(self, argv: tuple[str, ...]) -> TerminalResult:
+        state = _facade_state(self)
+        if state.terminal_tools is None:
+            raise ValueError("terminal tools unavailable")
+        detail = "terminal_execute"
+        state.before_call(detail)
+        try:
+            result = state.terminal_tools.execute(argv)
+        except BaseException:
+            state.after_call(detail, False)
+            raise
+        state.after_call(detail, True)
+        return result
+
 
 class _FacadeState:
-    __slots__ = ("tools", "before_call", "after_call")
+    __slots__ = ("tools", "terminal_tools", "before_call", "after_call")
 
     def __init__(
         self,
         tools: WorkspaceTools,
         before_call: Callable[[str], None],
         after_call: Callable[[str, bool], None],
+        terminal_tools: TerminalTools | None,
     ) -> None:
         self.tools = tools
+        self.terminal_tools = terminal_tools
         self.before_call = before_call
         self.after_call = after_call
 
@@ -219,10 +258,13 @@ def _create_workspace_facade(
     tools: WorkspaceTools,
     before_call: Callable[[str], None],
     after_call: Callable[[str, bool], None],
-) -> WorkspaceProtocol:
+    terminal_tools: TerminalTools | None = None,
+) -> AgentToolsProtocol:
     facade = _AdapterWorkspaceFacade()
     with _FACADE_TOOLS_LOCK:
-        _FACADE_TOOLS[facade] = _FacadeState(tools, before_call, after_call)
+        _FACADE_TOOLS[facade] = _FacadeState(
+            tools, before_call, after_call, terminal_tools
+        )
     return facade
 
 
@@ -232,3 +274,5 @@ def _revoke_workspace_facade(facade: WorkspaceProtocol) -> None:
         _FACADE_TOOLS[facade] = None
     if state is not None:
         state.tools.revoke()
+        if state.terminal_tools is not None:
+            state.terminal_tools.revoke()

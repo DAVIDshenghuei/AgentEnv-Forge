@@ -1,0 +1,17 @@
+{
+  "task_id": "log-normalization-001",
+  "version": "1.0.0",
+  "instruction": "Normalize the service log and write the result to logs/normalized.log.",
+  "max_actions": 8,
+  "split": "validation",
+  "initial_files": [
+    {
+      "path": "logs/raw.log",
+      "content": " INFO   Service STARTED \n ERROR   RETRY  \n"
+    }
+  ],
+  "input_artifact": "logs/raw.log",
+  "expected_artifact": "logs/normalized.log",
+  "expected_content": "info service started\nerror retry\n",
+  "allowed_artifacts": ["logs/normalized.log"]
+}
