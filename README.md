@@ -2,6 +2,11 @@
 
 This repository contains a deliberately small, deterministic causal evaluation slice. It has no model or remote API dependency: a checked-in task is reset into a fresh temporary workspace, a controlled action writes `result.txt`, and a deterministic verifier emits reward plus a JSONL trajectory.
 
+## Project records
+
+- [M3B release notes](docs/releases/2026-07-20-m3b.md)
+- [ADR 0001: Use a Bounded Offline Browser Capability](docs/adr/0001-bounded-offline-browser.md)
+
 ## Setup
 
 Requirements: [uv](https://docs.astral.sh/uv/) and a platform supported by uv. The project pins Python 3.11 through `.python-version`; uv installs it when needed.
@@ -64,7 +69,7 @@ Status: **implemented**
 
 Browser uses Playwright `1.61.0` with its matching Chromium revision against a fixed synthetic HTTPS origin. Site version `1.0.0` is bound to the ordered HTML fixture by a canonical SHA-256 manifest. The server exposes exactly `open_page` and `click_link`; paths and link identifiers are canonical, bounded values. The browser context fulfills only exact bundled pages, blocks service workers, and aborts every other request. Arbitrary URLs, selectors, forms, downloads, screenshots, cookies, storage, and page evaluation are outside this slice.
 
-The synchronous production client starts only the bundled Browser MCP module. Each admitted transport call owns one MCP stdio process and one real Chromium lifecycle, validates the exact server identity, inventory, schemas, metadata, and bounded result, then closes before returning. A default 10-second deadline covers the call; the official transport terminates and reaps the process tree on timeout. Tests observe the real MCP, Playwright driver, and Chromium descendant PIDs and require all of them to disappear after both successful calls and timeout termination. Failures are sanitized and browser payloads never enter trajectory details.
+The synchronous production client starts only the bundled Browser MCP module. Each admitted transport call owns one MCP stdio process and one real Chromium lifecycle, validates the exact server name, tools capability, tool inventory, schemas, metadata, and bounded result, then closes before returning. A default 10-second deadline covers the call; the official transport terminates and reaps the process tree on timeout. Success-path tests continuously observe the real MCP worker, Playwright driver, and Chromium descendants and require all of them to disappear. The timeout-path test substitutes a fixed hanging child that launches real Playwright and Chromium, continuously observes its descendants, and requires the complete observed tree to be reaped. Failures are sanitized and browser payloads never enter trajectory details.
 
 Browser, research, workspace, and terminal calls share one episode action budget and are revoked and drained before adapter close and hidden verification. The train task `browser-evaluation-001` opens the offline index, performs a real DOM link click, passes page evidence through the Docker terminal, writes `browser-report.txt`, and is scored by the hidden verifier. Its host, real-Docker, production-image, and network-disabled Compose acceptance paths are exercised in CI. The production image installs the Playwright-managed browser in the non-root runtime user's standard cache.
 
