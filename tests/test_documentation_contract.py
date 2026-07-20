@@ -6,6 +6,8 @@ README = ROOT / "README.md"
 DESIGN = ROOT / "DESIGN.md"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 GIT_ATTRIBUTES = ROOT / ".gitattributes"
+M3B_RELEASE = ROOT / "docs" / "releases" / "2026-07-20-m3b.md"
+BROWSER_ADR = ROOT / "docs" / "adr" / "0001-bounded-offline-browser.md"
 _UNIMPLEMENTED = (
     "CAMEL, model inference, RL training, and arbitrary web browsing remain unimplemented"
 )
@@ -136,6 +138,9 @@ def test_readme_documents_the_implemented_offline_browser_mcp() -> None:
     assert "`open_page` and `click_link`" in readme
     assert "aborts every other request" in readme
     assert "Each admitted transport call owns one MCP stdio process" in readme
+    assert "Success-path tests continuously observe the real MCP worker" in readme
+    assert "timeout-path test substitutes a fixed hanging child" in readme
+    assert "after both successful calls and timeout termination" not in readme
     assert "process tree" in readme
     assert "one episode action budget" in readme
     assert "`browser-evaluation-001`" in readme
@@ -151,10 +156,42 @@ def test_design_documents_the_implemented_offline_browser_lifecycle() -> None:
     assert "`open_page` and `click_link`" in design
     assert "aborts every other request" in design
     assert "Every admitted transport call creates one stdio process" in design
+    assert "Success-path tests continuously observe the real MCP worker" in design
+    assert "timeout-path test substitutes a fixed hanging child" in design
+    assert "reaped on both success and timeout" not in design
     assert "process tree" in design
     assert "same episode action budget" in design
     assert "`browser-evaluation-001`" in design
     assert "do not provide hard host memory or PID quotas" in design
+
+
+def test_m3b_release_and_browser_adr_are_discoverable_and_fail_closed() -> None:
+    readme = README.read_text(encoding="utf-8")
+    release = M3B_RELEASE.read_text(encoding="utf-8")
+    adr = BROWSER_ADR.read_text(encoding="utf-8")
+
+    assert "[M3B release notes](docs/releases/2026-07-20-m3b.md)" in readme
+    assert "[ADR 0001: Use a Bounded Offline Browser Capability]" in readme
+
+    assert release.startswith("# M3B Release Notes: Bounded Offline Browser Capability\n")
+    assert "**Status:** Merged to `main`" in release
+    assert "Pull request:** [#4]" in release
+    assert "M3B does not add Browser-specific reward algebra" in release
+    assert "exact MCP server name, tools capability, tool inventory" in release
+    assert "timeout-path test continuously observes a fixed hanging child" in release
+    assert "arbitrary web browsing remain unimplemented" in release
+    assert "Post-merge `main` CI" in release
+
+    assert adr.startswith("# ADR 0001: Use a Bounded Offline Browser Capability\n")
+    assert "**Status:** Accepted" in adr
+    assert "## Decision" in adr
+    assert "exact server name, presence of the tools capability" in adr
+    assert "fixed hanging child that launches real Playwright and Chromium" in adr
+    assert "server name, version, instructions" not in adr
+    assert "Browser cannot select an arbitrary origin or external URL" in adr
+    assert "Browser failures do not alter reward algebra" in adr
+    assert "### Persistent episode-wide Browser MCP and Chromium" in adr
+    assert "## Scope not decided here" in adr
 
 
 def test_docs_fail_closed_about_unimplemented_next_milestone() -> None:
