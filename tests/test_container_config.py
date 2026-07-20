@@ -51,8 +51,8 @@ def test_effective_compose_config_is_hardened():
 
 
 @pytest.mark.skipif(
-    os.environ.get("AGENTENV_DOCKER_TESTS") != "1",
-    reason="set AGENTENV_DOCKER_TESTS=1 for the real container gate",
+    os.environ.get("AGENTENV_FORGE_DOCKER_INTEGRATION") != "1",
+    reason="set AGENTENV_FORGE_DOCKER_INTEGRATION=1 for the real container gate",
 )
 def test_real_container_runtime_is_hardened():
     probe = (

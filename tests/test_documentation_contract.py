@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 
 
@@ -5,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
 DESIGN = ROOT / "DESIGN.md"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+CONTAINER_CONFIG_TEST = ROOT / "tests" / "test_container_config.py"
 GIT_ATTRIBUTES = ROOT / ".gitattributes"
 M3B_RELEASE = ROOT / "docs" / "releases" / "2026-07-20-m3b.md"
 BROWSER_ADR = ROOT / "docs" / "adr" / "0001-bounded-offline-browser.md"
@@ -212,6 +214,61 @@ def test_design_distinguishes_command_sync_from_environment_close() -> None:
 
 def test_ci_matches_the_reviewed_fail_closed_workflow() -> None:
     assert CI_WORKFLOW.read_bytes() == _EXPECTED_CI_WORKFLOW.encode("utf-8")
+
+
+def _real_container_gate_uses_flag(source: str, flag: str) -> bool:
+    try:
+        tree = ast.parse(source)
+        expected_condition = ast.parse(
+            f'os.environ.get("{flag}") != "1"', mode="eval"
+        ).body
+    except SyntaxError:
+        return False
+    functions = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "test_real_container_runtime_is_hardened"
+    ]
+    if len(functions) != 1 or len(functions[0].decorator_list) != 1:
+        return False
+    decorator = functions[0].decorator_list[0]
+    if (
+        not isinstance(decorator, ast.Call)
+        or not isinstance(decorator.func, ast.Attribute)
+        or decorator.func.attr != "skipif"
+        or not isinstance(decorator.func.value, ast.Attribute)
+        or decorator.func.value.attr != "mark"
+        or not isinstance(decorator.func.value.value, ast.Name)
+        or decorator.func.value.value.id != "pytest"
+        or len(decorator.args) != 1
+        or ast.dump(decorator.args[0]) != ast.dump(expected_condition)
+        or len(decorator.keywords) != 1
+        or decorator.keywords[0].arg != "reason"
+        or not isinstance(decorator.keywords[0].value, ast.Constant)
+        or decorator.keywords[0].value.value
+        != f"set {flag}=1 for the real container gate"
+    ):
+        return False
+    return True
+
+
+def test_ci_full_integration_flag_admits_the_real_container_runtime_gate() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    container_contract = CONTAINER_CONFIG_TEST.read_text(encoding="utf-8")
+
+    canonical_flag = "AGENTENV_FORGE_DOCKER_INTEGRATION"
+    assert f"{canonical_flag}=1 uv run --no-sync pytest -q" in workflow
+    assert _real_container_gate_uses_flag(container_contract, canonical_flag)
+    assert "AGENTENV_DOCKER_TESTS" not in container_contract
+
+    decoy = container_contract.replace(
+        f'os.environ.get("{canonical_flag}") != "1"',
+        'os.environ.get("UNRELATED_FLAG") != "1"',
+        1,
+    )
+    decoy += f'\n# os.environ.get("{canonical_flag}") != "1"\n'
+    assert not _real_container_gate_uses_flag(decoy, canonical_flag)
 
 
 def test_github_workflows_are_checked_out_with_lf_bytes() -> None:
