@@ -5,6 +5,7 @@ description = "Deterministic causal environment evaluation vertical slice"
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "mcp>=1.28.1,<2",
+    "playwright==1.61.0",
     "pydantic>=2.7,<3",
 ]
 
@@ -20,3 +21,8 @@ packages = ["src/agentenv_forge"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "psutil==7.2.2",
+]

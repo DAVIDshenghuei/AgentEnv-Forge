@@ -31,8 +31,14 @@ jobs:
       - name: Install frozen development environment
         run: uv sync --extra dev --frozen
 
+      - name: Install Playwright Chromium
+        run: uv run --no-sync playwright install --with-deps chromium
+
       - name: Run Research MCP stdio contract
         run: uv run --no-sync pytest tests/test_research_mcp_stdio.py -q
+
+      - name: Run Browser MCP stdio contract
+        run: uv run --no-sync pytest tests/test_browser_mcp_stdio.py -q
 
       - name: Build dedicated sandbox image
         run: docker build --no-cache -f sandbox/Dockerfile -t agentenv-forge-sandbox:test .
@@ -43,5 +49,7 @@ jobs:
       - name: Build Compose services
         run: docker compose build
 
-      - name: Run Compose smoke test
-        run: docker compose run --rm smoke
+      - name: Run Compose smoke tests
+        run: |
+          docker compose run --rm smoke
+          docker compose run --rm browser-smoke

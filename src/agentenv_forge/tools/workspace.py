@@ -7,6 +7,7 @@ from weakref import WeakKeyDictionary
 from ..runner import _read_bounded_text, _workspace_target, _write_workspace_text
 from ..schemas import PublicTask
 from .budget import ActionBudget, ActionBudgetExhaustedError
+from .browser import BrowserPage, BrowserTools
 from .research import ResearchProtocol, ResearchTools
 from .terminal import TerminalProtocol, TerminalResult, TerminalTools
 
@@ -29,6 +30,10 @@ class AgentToolsProtocol(
     WorkspaceProtocol, TerminalProtocol, ResearchProtocol, Protocol
 ):
     """Opaque model-facing workspace, terminal, and research capabilities."""
+
+    def open_page(self, path: str) -> BrowserPage: ...
+
+    def click_link(self, link_id: str) -> BrowserPage: ...
 
 
 class WorkspaceTools:
@@ -254,12 +259,43 @@ class _AdapterWorkspaceFacade:
         state.after_call(detail, True)
         return result
 
+    def open_page(self, path: str) -> BrowserPage:
+        try:
+            state = _facade_state(self)
+        except ValueError:
+            raise ValueError("browser tools revoked") from None
+        detail = "browser_open_page"
+        state.before_call(detail)
+        try:
+            result = state.browser_tools.open_page(path)
+        except BaseException:
+            state.after_call(detail, False)
+            raise
+        state.after_call(detail, True)
+        return result
+
+    def click_link(self, link_id: str) -> BrowserPage:
+        try:
+            state = _facade_state(self)
+        except ValueError:
+            raise ValueError("browser tools revoked") from None
+        detail = "browser_click_link"
+        state.before_call(detail)
+        try:
+            result = state.browser_tools.click_link(link_id)
+        except BaseException:
+            state.after_call(detail, False)
+            raise
+        state.after_call(detail, True)
+        return result
+
 
 class _FacadeState:
     __slots__ = (
         "tools",
         "terminal_tools",
         "research_tools",
+        "browser_tools",
         "before_call",
         "after_call",
     )
@@ -271,10 +307,12 @@ class _FacadeState:
         after_call: Callable[[str, bool], None],
         terminal_tools: TerminalTools | None,
         research_tools: ResearchTools,
+        browser_tools: BrowserTools,
     ) -> None:
         self.tools = tools
         self.terminal_tools = terminal_tools
         self.research_tools = research_tools
+        self.browser_tools = browser_tools
         self.before_call = before_call
         self.after_call = after_call
 
@@ -299,13 +337,21 @@ def _create_workspace_facade(
     after_call: Callable[[str, bool], None],
     terminal_tools: TerminalTools | None = None,
     research_tools: ResearchTools | None = None,
+    browser_tools: BrowserTools | None = None,
 ) -> AgentToolsProtocol:
     if research_tools is None:
         raise ValueError("research tools unavailable")
+    if browser_tools is None:
+        raise ValueError("browser tools unavailable")
     facade = _AdapterWorkspaceFacade()
     with _FACADE_TOOLS_LOCK:
         _FACADE_TOOLS[facade] = _FacadeState(
-            tools, before_call, after_call, terminal_tools, research_tools
+            tools,
+            before_call,
+            after_call,
+            terminal_tools,
+            research_tools,
+            browser_tools,
         )
     return facade
 
@@ -319,3 +365,4 @@ def _revoke_workspace_facade(facade: WorkspaceProtocol) -> None:
         if state.terminal_tools is not None:
             state.terminal_tools.revoke()
         state.research_tools.revoke()
+        state.browser_tools.revoke()

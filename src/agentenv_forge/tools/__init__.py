@@ -1,6 +1,13 @@
 """Public workspace tools."""
 
 from .budget import ActionBudget, ActionBudgetExhaustedError
+from .browser import (
+    BrowserActionLimitError,
+    BrowserLink,
+    BrowserPage,
+    BrowserProtocol,
+    BrowserTools,
+)
 from .research import (
     ResearchActionLimitError,
     ResearchClientProtocol,
@@ -24,6 +31,11 @@ __all__ = [
     "ActionBudget",
     "ActionBudgetExhaustedError",
     "AgentToolsProtocol",
+    "BrowserActionLimitError",
+    "BrowserLink",
+    "BrowserPage",
+    "BrowserProtocol",
+    "BrowserTools",
     "ResearchActionLimitError",
     "ResearchClientProtocol",
     "ResearchProtocol",
