@@ -6,13 +6,19 @@ COPY --from=uv-bin /uv /uvx /usr/local/bin/
 RUN uv --version | grep -q '^uv 0.11.29 '
 
 WORKDIR /app
-ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_CACHE_DIR=/tmp/uv-cache
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_CACHE_DIR=/tmp/uv-cache
 
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
-RUN uv sync --frozen --no-dev
-
 RUN useradd --create-home --uid 10001 forge
+RUN uv sync --frozen --no-dev \
+    && PLAYWRIGHT_BROWSERS_PATH=/home/forge/.cache/ms-playwright \
+        uv run --no-sync playwright install --with-deps chromium \
+    && chown -R 10001:10001 /home/forge/.cache \
+    && rm -rf /var/lib/apt/lists/* /tmp/uv-cache
+
 USER forge
 
 ENTRYPOINT ["uv", "run", "--no-sync", "python", "-m", "agentenv_forge"]

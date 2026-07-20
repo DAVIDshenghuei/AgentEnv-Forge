@@ -1,5 +1,6 @@
 services:
   smoke:
+    image: agentenv-forge:local
     build: .
     network_mode: none
     cap_drop:
@@ -17,5 +18,25 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=16m
+    security_opt:
+      - no-new-privileges:true
+
+  browser-smoke:
+    image: agentenv-forge:local
+    network_mode: none
+    cap_drop:
+      - ALL
+    entrypoint:
+      - /app/.venv/bin/python
+      - -c
+    command:
+      - >-
+        from agentenv_forge.mcp.browser_client import StdioBrowserClient;
+        page = StdioBrowserClient().open_page('/');
+        assert page.title == 'Offline Evaluation Library';
+        print(page.title)
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
     security_opt:
       - no-new-privileges:true

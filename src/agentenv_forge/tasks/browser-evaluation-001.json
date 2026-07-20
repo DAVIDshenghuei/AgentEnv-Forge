@@ -1,0 +1,17 @@
+{
+  "task_id": "browser-evaluation-001",
+  "version": "1.0.0",
+  "instruction": "Use the browser tools to open / and follow the browser-isolation link. Use the terminal to format the page evidence as '<title> | <publication year> | external requests aborted' and write it to browser-report.txt.",
+  "max_actions": 4,
+  "split": "train",
+  "initial_files": [
+    {
+      "path": "browser-instructions.txt",
+      "content": "Use the fixed offline browser site and terminal transformation described by the task.\n"
+    }
+  ],
+  "input_artifact": "browser-instructions.txt",
+  "expected_artifact": "browser-report.txt",
+  "expected_content": "Offline Browser Evaluation | 2024 | external requests aborted\n",
+  "allowed_artifacts": ["browser-report.txt"]
+}

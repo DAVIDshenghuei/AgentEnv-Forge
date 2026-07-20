@@ -6,7 +6,9 @@ README = ROOT / "README.md"
 DESIGN = ROOT / "DESIGN.md"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 GIT_ATTRIBUTES = ROOT / ".gitattributes"
-_UNIMPLEMENTED = "Browser, CAMEL, model inference, and RL training are not implemented"
+_UNIMPLEMENTED = (
+    "CAMEL, model inference, RL training, and arbitrary web browsing remain unimplemented"
+)
 _EXPECTED_CI_WORKFLOW = """name: CI
 
 on:
@@ -40,8 +42,14 @@ jobs:
       - name: Install frozen development environment
         run: uv sync --extra dev --frozen
 
+      - name: Install Playwright Chromium
+        run: uv run --no-sync playwright install --with-deps chromium
+
       - name: Run Research MCP stdio contract
         run: uv run --no-sync pytest tests/test_research_mcp_stdio.py -q
+
+      - name: Run Browser MCP stdio contract
+        run: uv run --no-sync pytest tests/test_browser_mcp_stdio.py -q
 
       - name: Build dedicated sandbox image
         run: docker build --no-cache -f sandbox/Dockerfile -t agentenv-forge-sandbox:test .
@@ -52,8 +60,10 @@ jobs:
       - name: Build Compose services
         run: docker compose build
 
-      - name: Run Compose smoke test
-        run: docker compose run --rm smoke
+      - name: Run Compose smoke tests
+        run: |
+          docker compose run --rm smoke
+          docker compose run --rm browser-smoke
 """
 
 
@@ -115,6 +125,36 @@ def test_design_documents_the_implemented_offline_research_lifecycle() -> None:
     assert "one stdio process and session per call" in design
     assert "closed before return and before hidden verification" in design
     assert "`research-synthesis-001`" in design
+
+
+def test_readme_documents_the_implemented_offline_browser_mcp() -> None:
+    readme = README.read_text(encoding="utf-8")
+
+    assert "## Offline Browser MCP" in readme
+    assert "Playwright `1.61.0`" in readme
+    assert "fixed synthetic HTTPS origin" in readme
+    assert "`open_page` and `click_link`" in readme
+    assert "aborts every other request" in readme
+    assert "Each admitted transport call owns one MCP stdio process" in readme
+    assert "process tree" in readme
+    assert "one episode action budget" in readme
+    assert "`browser-evaluation-001`" in readme
+    assert "does not claim hard host memory or PID isolation" in readme
+
+
+def test_design_documents_the_implemented_offline_browser_lifecycle() -> None:
+    design = DESIGN.read_text(encoding="utf-8")
+
+    assert "## Implemented offline Browser MCP lifecycle" in design
+    assert "Playwright `1.61.0`" in design
+    assert "fixed synthetic HTTPS site" in design
+    assert "`open_page` and `click_link`" in design
+    assert "aborts every other request" in design
+    assert "Every admitted transport call creates one stdio process" in design
+    assert "process tree" in design
+    assert "same episode action budget" in design
+    assert "`browser-evaluation-001`" in design
+    assert "do not provide hard host memory or PID quotas" in design
 
 
 def test_docs_fail_closed_about_unimplemented_next_milestone() -> None:

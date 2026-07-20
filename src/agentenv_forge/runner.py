@@ -20,7 +20,7 @@ from .schemas import (
 
 if TYPE_CHECKING:
     from .adapters import AgentAdapter
-    from .tools import ResearchClientProtocol, TerminalResult
+    from .tools import BrowserProtocol, ResearchClientProtocol, TerminalResult
 
 
 class TerminalEnvironment(Protocol):
@@ -287,12 +287,14 @@ def run_agent_episode(
     terminal_command_runner: "Callable[[tuple[str, ...]], TerminalResult] | None" = None,
     terminal_environment_factory: "Callable[[Path], TerminalEnvironment] | None" = None,
     research_client: "ResearchClientProtocol | None" = None,
+    browser_client: "BrowserProtocol | None" = None,
 ) -> Trajectory:
     if terminal_command_runner is not None and terminal_environment_factory is not None:
         raise ValueError("terminal runner and environment are mutually exclusive")
     from .adapters import AgentRunResult
     from .tools import (
         ActionBudget,
+        BrowserTools,
         ResearchTools,
         TerminalResult,
         TerminalTools,
@@ -339,6 +341,21 @@ def run_agent_episode(
             budget=budget,
             client=research_client,
         )
+        if browser_client is None:
+
+            class _UnavailableBrowserClient:
+                def open_page(self, path: str):
+                    raise ValueError("browser client unavailable")
+
+                def click_link(self, current_path: str, link_id: str):
+                    raise ValueError("browser client unavailable")
+
+            browser_client = _UnavailableBrowserClient()
+        browser_tools = BrowserTools(
+            task=public_task,
+            budget=budget,
+            client=browser_client,
+        )
         terminal_environment: TerminalEnvironment | None = None
         if terminal_environment_factory is not None:
             try:
@@ -381,6 +398,8 @@ def run_agent_episode(
             "terminal_execute",
             "research_search_papers",
             "research_get_paper",
+            "browser_open_page",
+            "browser_click_link",
             *(f"read_text:{path}" for path in public_task.input_artifacts),
             *(f"write_text:{path}" for path in public_task.allowed_artifacts),
         }
@@ -490,6 +509,7 @@ def run_agent_episode(
                 after_tool_call,
                 terminal_tools,
                 research_tools,
+                browser_tools,
             )
         except Exception:
             if terminal_environment is None:
@@ -721,6 +741,7 @@ def run_docker_agent_episode(
     image: str = "agentenv-forge-sandbox:test",
     command_timeout_seconds: float = 10.0,
     research_client: "ResearchClientProtocol | None" = None,
+    browser_client: "BrowserProtocol | None" = None,
 ) -> Trajectory:
     from uuid import uuid4
 
@@ -746,6 +767,7 @@ def run_docker_agent_episode(
         workspace_root=workspace_root,
         terminal_environment_factory=create_environment,
         research_client=research_client,
+        browser_client=browser_client,
     )
 
 
